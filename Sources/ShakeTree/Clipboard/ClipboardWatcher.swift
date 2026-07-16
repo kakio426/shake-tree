@@ -7,6 +7,12 @@ final class ClipboardWatcher {
     private var timer: Timer?
     var onChange: (() -> Void)?
 
+    // 변경은 감지됐지만 아직 내용을 못 읽은(=앱이 쓰는 중인) changeCount와 재시도 횟수.
+    // 이게 없으면 clearContents()~데이터쓰기 사이에 폴링이 걸렸을 때 그 복사를 영영 놓친다.
+    private var pendingChangeCount = 0
+    private var pendingRetries = 0
+    private static let maxRetries = 6  // 0.5s * 6 = 3초 안에 못 읽으면 미지원 타입으로 판단
+
     /// 비밀번호 매니저 등이 표시하는 "기록 금지" 타입 (http://nspasteboard.org 규약)
     private static let ignoredTypes: Set<String> = [
         "org.nspasteboard.ConcealedType",
@@ -27,29 +33,70 @@ final class ClipboardWatcher {
 
     private func check() {
         let pb = NSPasteboard.general
-        guard pb.changeCount != changeCount else { return }
-        changeCount = pb.changeCount
+        let current = pb.changeCount
+        guard current != changeCount else { return }
 
         let types = (pb.types ?? []).map(\.rawValue)
-        guard !types.contains(where: { Self.ignoredTypes.contains($0) }) else { return }
 
+        // 비밀번호 매니저 등 "기록 금지" 타입: 변경으로 인정하고 넘어감(재시도 안 함).
+        if types.contains(where: { Self.ignoredTypes.contains($0) }) {
+            changeCount = current
+            resetPending()
+            return
+        }
+
+        if capture(from: pb) {
+            // 내용을 읽는 데 성공했을 때에만 changeCount를 확정한다.
+            changeCount = current
+            resetPending()
+            onChange?()
+            return
+        }
+
+        // 변경은 감지됐지만 아직 내용을 못 읽음 → 앱이 clearContents 후 데이터를 쓰는 중일 수
+        // 있으므로 changeCount를 확정하지 않고 다음 폴링에서 재시도한다.
+        if pendingChangeCount == current {
+            pendingRetries += 1
+            if pendingRetries >= Self.maxRetries {
+                // 우리가 다루지 않는 타입(커스텀 등)으로 판단 — 무한 재시도를 막고 넘어간다.
+                changeCount = current
+                resetPending()
+            }
+        } else {
+            pendingChangeCount = current
+            pendingRetries = 1
+        }
+    }
+
+    /// 성공적으로 캡처했으면 true. 아직 읽을 게 없으면 false(재시도 대상).
+    private func capture(from pb: NSPasteboard) -> Bool {
         // 우선순위: 파일 > 텍스트 > 이미지
         if let urls = pb.readObjects(forClasses: [NSURL.self]) as? [URL],
             !urls.isEmpty, urls.allSatisfy(\.isFileURL)
         {
             let paths = urls.map(\.path).joined(separator: "\n")
             ClipboardStore.shared.add(kind: .file, text: paths, imageData: nil)
-        } else if let string = pb.string(forType: .string),
+            return true
+        }
+        if let string = pb.string(forType: .string),
             !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
             ClipboardStore.shared.add(kind: .text, text: string, imageData: nil)
-        } else if let imageData = readImagePNG(from: pb) {
-            guard imageData.count <= Self.maxImageBytes else { return }
-            ClipboardStore.shared.add(kind: .image, text: nil, imageData: imageData)
-        } else {
-            return
+            return true
         }
-        onChange?()
+        if let imageData = readImagePNG(from: pb) {
+            // 너무 큰 이미지는 저장은 건너뛰되, "처리됨"으로 간주해 재시도하지 않는다.
+            if imageData.count <= Self.maxImageBytes {
+                ClipboardStore.shared.add(kind: .image, text: nil, imageData: imageData)
+            }
+            return true
+        }
+        return false
+    }
+
+    private func resetPending() {
+        pendingChangeCount = 0
+        pendingRetries = 0
     }
 
     private func readImagePNG(from pb: NSPasteboard) -> Data? {
