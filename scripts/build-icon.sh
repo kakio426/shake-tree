@@ -6,6 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
 if [[ -f Resources/AppIconSource.png ]]; then
     sips -z 1024 1024 Resources/AppIconSource.png --out "$TMP/icon_1024.png" >/dev/null
 else
@@ -23,5 +24,4 @@ done
 
 mkdir -p Resources
 iconutil -c icns "$ICONSET" -o Resources/AppIcon.icns
-rm -rf "$TMP"
 echo "built Resources/AppIcon.icns"
