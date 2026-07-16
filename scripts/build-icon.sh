@@ -4,10 +4,14 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-swift build
 
 TMP=$(mktemp -d)
-SHAKETREE_APPICON="$TMP/icon_1024.png" .build/debug/ShakeTree
+if [[ -f Resources/AppIconSource.png ]]; then
+    sips -z 1024 1024 Resources/AppIconSource.png --out "$TMP/icon_1024.png" >/dev/null
+else
+    swift build
+    SHAKETREE_APPICON="$TMP/icon_1024.png" .build/debug/ShakeTree
+fi
 
 ICONSET="$TMP/AppIcon.iconset"
 mkdir -p "$ICONSET"
