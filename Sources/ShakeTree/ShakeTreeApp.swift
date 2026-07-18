@@ -19,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let historyPanel = HistoryPanelController()
     private var hotKey: HotKey?
     private let screenshotWatcher = ScreenshotWatcher()
+    private var screenshotBothItem: NSMenuItem!
+    private var screenshotClipItem: NSMenuItem!
     private let usageProvider = UsageProvider()
     private let keepAwake = KeepAwake()
     private var keepAwakeItem: NSMenuItem!
@@ -52,11 +54,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         historyItem.target = self
         menu.addItem(historyItem)
 
-        let screenshotItem = NSMenuItem(
-            title: "스크린샷을 다운로드 폴더에 저장하기", action: #selector(setScreenshotLocation),
+        let screenshotParent = NSMenuItem(title: "스크린샷 저장 방식", action: nil, keyEquivalent: "")
+        let screenshotSub = NSMenu()
+        screenshotBothItem = NSMenuItem(
+            title: "다운로드 + 클립보드", action: #selector(setScreenshotModeBoth), keyEquivalent: "")
+        screenshotBothItem.target = self
+        screenshotClipItem = NSMenuItem(
+            title: "클립보드만 (파일 저장 안 함)", action: #selector(setScreenshotModeClipboard),
             keyEquivalent: "")
-        screenshotItem.target = self
-        menu.addItem(screenshotItem)
+        screenshotClipItem.target = self
+        screenshotSub.addItem(screenshotBothItem)
+        screenshotSub.addItem(screenshotClipItem)
+        screenshotParent.submenu = screenshotSub
+        menu.addItem(screenshotParent)
+        refreshScreenshotMenu()
 
         menu.addItem(.separator())
 
@@ -125,7 +136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         clipboardWatcher.start()
-        screenshotWatcher.start()
+        // both 모드에서만 파일 감시가 필요하다 (clipboardOnly는 macOS가 직접 처리).
+        if ScreenshotMode.current == .both { screenshotWatcher.start() }
         usageProvider.onUpdate = { [weak self] in self?.rebuildUsageMenuItems() }
         usageProvider.start()
         hotKey = HotKey { [weak self] in self?.historyPanel.toggle() }
@@ -282,14 +294,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func setScreenshotLocation() {
-        ScreenshotWatcher.setLocationToDownloads()
-        screenshotWatcher.directoryMayHaveChanged()
+    @objc private func setScreenshotModeBoth() { applyScreenshotMode(.both) }
+    @objc private func setScreenshotModeClipboard() { applyScreenshotMode(.clipboardOnly) }
+
+    private func applyScreenshotMode(_ mode: ScreenshotMode) {
+        let previous = ScreenshotMode.current
+        UserDefaults.standard.set(mode.rawValue, forKey: "screenshotMode")
+        ScreenshotWatcher.applyMode(mode)
+        if mode == .both {
+            screenshotWatcher.start()
+        } else {
+            screenshotWatcher.stop()
+        }
+        refreshScreenshotMenu()
+
+        // 모드가 실제로 바뀐 첫 순간에만 안내 (썸네일 끔 + 각 모드 동작 설명)
+        guard mode != previous else { return }
         let alert = NSAlert()
-        alert.messageText = "설정 완료"
-        alert.informativeText =
-            "이제 스크린샷이 다운로드 폴더에 저장되고, 동시에 클립보드에도 자동 복사됩니다."
+        alert.messageText = "스크린샷 저장 방식 변경됨"
+        switch mode {
+        case .both:
+            alert.informativeText =
+                "이제 스크린샷이 다운로드 폴더에 저장되고 동시에 클립보드에도 복사됩니다.\n"
+                + "빠른 반영을 위해 캡처 후 뜨는 '미리보기 썸네일'은 꺼집니다."
+        case .clipboardOnly:
+            alert.informativeText =
+                "이제 스크린샷이 파일로 저장되지 않고 클립보드로만 바로 복사됩니다.\n"
+                + "빠른 반영을 위해 캡처 후 뜨는 '미리보기 썸네일'은 꺼집니다."
+        }
         alert.runModal()
+    }
+
+    private func refreshScreenshotMenu() {
+        let mode = ScreenshotMode.current
+        screenshotBothItem?.state = (mode == .both) ? .on : .off
+        screenshotClipItem?.state = (mode == .clipboardOnly) ? .on : .off
     }
 
     @objc private func toggleLoginItem(_ sender: NSMenuItem) {
