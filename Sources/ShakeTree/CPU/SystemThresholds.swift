@@ -25,6 +25,15 @@ enum SystemThresholds {
         }
     }
 
+    /// 디스크는 꽉 차기 직전에만 경고 — 일상적으로 60~80%는 흔하다.
+    static func diskLevel(_ fraction: Double) -> UsageLevel {
+        switch fraction {
+        case 0.95...: return .critical
+        case 0.88..<0.95: return .warning
+        default: return .normal
+        }
+    }
+
     /// 둘 중 더 심각한 쪽 — 아이콘 색은 하나만 고를 수 있으므로.
     static func worse(_ a: UsageLevel, _ b: UsageLevel) -> UsageLevel {
         switch (a, b) {
