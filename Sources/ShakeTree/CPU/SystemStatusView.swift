@@ -8,8 +8,8 @@ import SwiftUI
 struct SystemStatusView: View {
     let cpuFraction: Double  // 0...1
     let cpuHistory: [Double]
-    let memFraction: Double
     let memHistory: [Double]
+    let memLevel: UsageLevel  // 사용량 %가 아니라 커널의 실제 메모리 압박 신호
     let memUsedGB: Double
     let memTotalGB: Double
     let diskFraction: Double
@@ -38,7 +38,7 @@ struct SystemStatusView: View {
         String(format: "%.0f/%.0fGB", used, total)
     }
 
-    private var ramColor: Color { color(for: SystemThresholds.ramLevel(memFraction)) }
+    private var ramColor: Color { color(for: memLevel) }
     private var diskColor: Color { color(for: SystemThresholds.diskLevel(diskFraction)) }
 
     private func color(for level: UsageLevel) -> Color {

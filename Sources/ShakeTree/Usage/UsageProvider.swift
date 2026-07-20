@@ -109,7 +109,20 @@ final class UsageProvider: ObservableObject {
                 }
             }
         }
-        return try JSONDecoder().decode([CodexBarEntry].self, from: data)
+        // 프로바이더 하나(예: 쿠키 만료로 Claude 조회 실패)가 null 필드를 내보내면
+        // 배열 전체를 [CodexBarEntry]로 한 번에 디코드할 때 전체가 실패해버린다.
+        // 항목별로 개별 디코드해서 실패한 프로바이더만 건너뛰고 나머지는 살린다.
+        guard let rawArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else {
+            return try JSONDecoder().decode([CodexBarEntry].self, from: data)
+        }
+        let decoder = JSONDecoder()
+        return rawArray.compactMap { dict in
+            guard let entryData = try? JSONSerialization.data(withJSONObject: dict) else {
+                return nil
+            }
+            return try? decoder.decode(CodexBarEntry.self, from: entryData)
+        }
     }
 
     private static func display(from entry: CodexBarEntry) -> ProviderUsage {

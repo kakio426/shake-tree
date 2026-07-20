@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var animator: TreeAnimator!
     private let cpuMonitor = CPUMonitor()
     private let memoryMonitor = MemoryMonitor()
+    private let memoryPressureMonitor = MemoryPressureMonitor()
     private let diskMonitor = DiskMonitor()
     private var statsTimer: Timer?
     private var systemStatusItem: NSMenuItem!
@@ -39,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.menu = menu
 
         let initialStatus = SystemStatusView(
-            cpuFraction: 0, cpuHistory: [], memFraction: 0, memHistory: [],
+            cpuFraction: 0, cpuHistory: [], memHistory: [], memLevel: .normal,
             memUsedGB: 0, memTotalGB: 0, diskFraction: 0, diskUsedGB: 0, diskTotalGB: 0)
         let statusHost = NSHostingView(rootView: initialStatus)
         statusHost.frame.size = statusHost.fittingSize
@@ -157,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: Notification.Name("dev.yubyeongju.shaketree.toggle-awake"), object: nil,
             suspensionBehavior: .deliverImmediately)
 
+        memoryPressureMonitor.start()
         _ = cpuMonitor.sample()  // 첫 샘플은 델타 기준점만 잡음
         // 0.5초마다 샘플링 — 나무 흔들림이 CPU 변화를 촘촘하고 민감하게 따라가도록.
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -177,8 +179,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if memHistory.count > historyCapacity { memHistory.removeFirst() }
 
         // 평소엔 흑백 나무 그대로, CPU/RAM 중 하나라도 경고 수준이면 그때만 색을 입힌다.
+        // RAM은 사용량 %가 아니라 커널의 실제 메모리 압박 신호를 기준으로 삼는다 —
+        // macOS가 남는 RAM을 파일 캐시로 항상 꽉 채우는 게 정상이라 %만 보면 늘 빨간색이 된다.
         let level = SystemThresholds.worse(
-            SystemThresholds.cpuLevel(cpu), SystemThresholds.ramLevel(mem.usedFraction))
+            SystemThresholds.cpuLevel(cpu), memoryPressureMonitor.level)
         switch level {
         case .critical: animator.setWarningColor(.systemRed)
         case .warning: animator.setWarningColor(.systemOrange)
@@ -188,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let disk = diskMonitor.sample()
         systemStatusHost.rootView = SystemStatusView(
             cpuFraction: cpu, cpuHistory: cpuHistory,
-            memFraction: mem.usedFraction, memHistory: memHistory,
+            memHistory: memHistory, memLevel: memoryPressureMonitor.level,
             memUsedGB: mem.usedGB, memTotalGB: mem.totalGB,
             diskFraction: disk.usedFraction, diskUsedGB: disk.usedGB, diskTotalGB: disk.totalGB)
         systemStatusHost.frame.size = systemStatusHost.fittingSize
@@ -210,8 +214,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             index += 1
         }
 
-        let statusItem = NSMenuItem(
-            title: usageProvider.statusText, action: nil, keyEquivalent: "")
+        let statusView = Text(usageProvider.statusText)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(width: 280, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 2)
+        let statusHost = NSHostingView(rootView: statusView)
+        statusHost.frame.size = statusHost.fittingSize
+        let statusItem = NSMenuItem()
+        statusItem.view = statusHost
         statusItem.isEnabled = false
         menu.insertItem(statusItem, at: index)
         usageMenuItems.append(statusItem)
