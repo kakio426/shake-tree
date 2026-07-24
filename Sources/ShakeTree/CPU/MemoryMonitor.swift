@@ -42,7 +42,7 @@ final class MemoryMonitor {
 
         let freePages =
             UInt64(stats.free_count) + UInt64(stats.purgeable_count)
-            + UInt64(stats.speculative_count)
+            + UInt64(stats.speculative_count) + UInt64(stats.inactive_count)
         let totalPages = totalBytes / UInt64(pageSize)
         let usedPages = totalPages > freePages ? totalPages - freePages : 0
         let usedBytes = usedPages * UInt64(pageSize)
