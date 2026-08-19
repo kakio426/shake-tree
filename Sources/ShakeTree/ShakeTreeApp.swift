@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let cpuMonitor = CPUMonitor()
     private let memoryMonitor = MemoryMonitor()
     private let memoryPressureMonitor = MemoryPressureMonitor()
+    private let swapMonitor = SwapMonitor()
     private let diskMonitor = DiskMonitor()
     private var statsTimer: Timer?
     private var systemStatusItem: NSMenuItem!
@@ -41,7 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let initialStatus = SystemStatusView(
             cpuFraction: 0, cpuHistory: [], memHistory: [], memLevel: .normal,
-            memUsedGB: 0, memTotalGB: 0, diskFraction: 0, diskUsedGB: 0, diskTotalGB: 0)
+            memUsedGB: 0, memTotalGB: 0, memCompressedGB: 0, swapUsedGB: 0,
+            diskFraction: 0, diskUsedGB: 0, diskTotalGB: 0)
         let statusHost = NSHostingView(rootView: initialStatus)
         statusHost.frame.size = statusHost.fittingSize
         systemStatusHost = statusHost
@@ -189,11 +191,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .normal: animator.setWarningColor(nil)
         }
 
+        let swap = swapMonitor.sample()
         let disk = diskMonitor.sample()
         systemStatusHost.rootView = SystemStatusView(
             cpuFraction: cpu, cpuHistory: cpuHistory,
             memHistory: memHistory, memLevel: memoryPressureMonitor.level,
             memUsedGB: mem.usedGB, memTotalGB: mem.totalGB,
+            memCompressedGB: mem.compressedGB, swapUsedGB: swap.usedGB,
             diskFraction: disk.usedFraction, diskUsedGB: disk.usedGB, diskTotalGB: disk.totalGB)
         systemStatusHost.frame.size = systemStatusHost.fittingSize
     }

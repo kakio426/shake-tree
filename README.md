@@ -17,7 +17,7 @@ RunCat + CodexBar + Maccy + Amphetamine을 하나로 합친 개인용 macOS 메�
 | 기능 | 설명 |
 |---|---|
 | 🌳 흔들리는 나무 | CPU 사용률 = 바람 세기. 0.5초 간격 샘플링 + 제곱근 곡선이라 저·중간 CPU 구간에서도 변화가 잘 느껴짐. 평소엔 흑백(라이트/다크 메뉴바 자동 대응)이지만 CPU 95%↑ 또는 RAM 92%↑면 빨강, 80%↑면 주황으로 아이콘 자체가 물듦 |
-| 📊 CPU·RAM·저장공간 | 메뉴 맨 위에 CPU%·RAM(GB)은 최근 1분 미니 그래프로, 저장공간(GB)은 채움 막대로 표시. 평소엔 단색이고 위험 수준에서만 색이 바뀜(디스크는 평소에도 높게 유지되는 게 정상이라 CPU보다 높은 경고 기준선 사용. RAM은 사용량 %가 아니라 커널의 실제 메모리 압박 신호로 판단 — macOS가 유휴 메모리를 파일 캐시로 항상 꽉 채우는 게 정상이라 %만 보면 늘 경고 상태가 되어버림) |
+| 📊 CPU·RAM·저장공간 | 메뉴 맨 위에 CPU%·RAM(GB)은 최근 1분 미니 그래프로, 저장공간(GB)은 채움 막대로 표시. 평소엔 단색이고 위험 수준에서만 색이 바뀜(디스크는 평소에도 높게 유지되는 게 정상이라 CPU보다 높은 경고 기준선 사용. RAM은 사용량 %가 아니라 커널의 실제 메모리 압박 신호로 판단 — macOS가 유휴 메모리를 파일 캐시로 항상 꽉 채우는 게 정상이라 %만 보면 늘 경고 상태가 되어버림). RAM 사용량은 Activity Monitor와 같은 정의(앱 메모리 + 유선 + 압축됨)로 계산하고, 바로 아래 줄에 **압축 메모리·스왑 사용량**을 함께 표시 — 램이 꽉 찬 맥에서는 사용량 GB가 천장에 붙어 안 움직이는 게 정상이라, 실제로 상태를 알려주는 건 이쪽이다 |
 | 🤖 Codex·Claude 사용량 | 세션/주간 "남은 %" 게이지 + 리셋 시각. 번들된 CLI로 조회 — **CodexBar 앱 설치 불필요** |
 | 📋 클립보드 히스토리 | 텍스트·이미지·파일 지원, 검색, 핀 고정, **⇧⌘V**로 메뉴바 아래 드롭다운. 비밀번호 매니저가 복사한 항목은 기록 안 함 |
 | ☕ 잠들지 않기 | 나무 **우클릭**으로 화면 잠자기 즉시 켜기/끄기(켜지면 아이콘에 점 표시), 좌클릭 메뉴에서 무기한/30분/1·2·4시간 지정 |
@@ -29,7 +29,7 @@ RunCat + CodexBar + Maccy + Amphetamine을 하나로 합친 개인용 macOS 메�
 | Feature | Description |
 |---|---|
 | 🌳 Swaying tree | CPU usage = wind strength. Sampled every 0.5s with a square-root response curve so changes are noticeable even in the low/mid CPU range. Monochrome by default (auto light/dark), turns red above CPU 95% / RAM 92%, orange above 80% |
-| 📊 CPU/RAM/Disk | At the top of the menu: CPU% and RAM (GB) as 1-minute mini sparklines, disk usage (GB) as a fill meter. Monochrome by default, colored only when critical (disk uses a higher threshold than CPU since it sits high as normal behavior; RAM coloring is driven by the kernel's actual memory-pressure signal rather than raw usage %, since macOS keeps free RAM filled with file cache as normal behavior, which would otherwise always read as critical) |
+| 📊 CPU/RAM/Disk | At the top of the menu: CPU% and RAM (GB) as 1-minute mini sparklines, disk usage (GB) as a fill meter. Monochrome by default, colored only when critical (disk uses a higher threshold than CPU since it sits high as normal behavior; RAM coloring is driven by the kernel's actual memory-pressure signal rather than raw usage %, since macOS keeps free RAM filled with file cache as normal behavior, which would otherwise always read as critical). RAM usage uses Activity Monitor's own definition (app memory + wired + compressed), with **compressed memory and swap** on the line just below it — on a Mac at its RAM ceiling the used-GB figure sits pinned near the top by design, and these are the numbers that actually move |
 | 🤖 Codex/Claude usage | Session/weekly "remaining %" gauges with reset time, fetched via a bundled CLI — **no CodexBar.app install required** |
 | 📋 Clipboard history | Text/image/file support, search, pinning, **⇧⌘V** dropdown anchored under the menu bar icon. Password-manager copies are never recorded |
 | ☕ Keep awake | **Right-click** the tree to toggle sleep prevention instantly (a dot badge appears on the icon), or pick a duration from the left-click menu |

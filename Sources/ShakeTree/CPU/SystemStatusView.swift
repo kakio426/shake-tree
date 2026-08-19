@@ -12,6 +12,8 @@ struct SystemStatusView: View {
     let memLevel: UsageLevel  // 사용량 %가 아니라 커널의 실제 메모리 압박 신호
     let memUsedGB: Double
     let memTotalGB: Double
+    let memCompressedGB: Double
+    let swapUsedGB: Double
     let diskFraction: Double
     let diskUsedGB: Double
     let diskTotalGB: Double
@@ -21,9 +23,15 @@ struct SystemStatusView: View {
             graphRow(
                 icon: "cpu", label: "CPU", history: cpuHistory, color: .primary,
                 detail: percentText(cpuFraction), detailColor: .primary)
-            graphRow(
-                icon: "memorychip", label: "RAM", history: memHistory, color: ramColor,
-                detail: gbText(memUsedGB, memTotalGB), detailColor: ramColor)
+            // RAM은 두 줄: 사용량 그래프 + 압축/스왑 보조 줄. 램이 꽉 찬 맥에서는
+            // 사용량 GB가 천장에 붙어 거의 안 움직이는 게 정상이라, 실제로 상태를
+            // 알려주는 압축·스왑을 바로 아래 붙여둔다.
+            VStack(alignment: .leading, spacing: 1) {
+                graphRow(
+                    icon: "memorychip", label: "RAM", history: memHistory, color: ramColor,
+                    detail: gbText(memUsedGB, memTotalGB), detailColor: ramColor)
+                memoryDetailRow()
+            }
             meterRow(
                 icon: "internaldrive", label: "저장", fraction: diskFraction, color: diskColor,
                 detail: gbText(diskUsedGB, diskTotalGB))
@@ -34,11 +42,35 @@ struct SystemStatusView: View {
     }
 
     private func percentText(_ f: Double) -> String { "\(Int((f * 100).rounded()))%" }
+    /// 총량이 작을수록(=RAM) 소수 한 자리까지 — 17GB짜리를 정수로 반올림하면
+    /// 1GB 미만의 변화가 통째로 사라져서 값이 멈춰 있는 것처럼 보인다.
+    /// 수백 GB짜리 디스크는 반대로 소수점이 지저분하기만 하므로 정수로 둔다.
     private func gbText(_ used: Double, _ total: Double) -> String {
-        String(format: "%.0f/%.0fGB", used, total)
+        total < 100
+            ? String(format: "%.1f/%.0fGB", used, total)
+            : String(format: "%.0f/%.0fGB", used, total)
     }
 
     private var ramColor: Color { color(for: memLevel) }
+
+    /// 압축 메모리는 항상, 스왑은 실제로 쓰이고 있을 때만 표시 —
+    /// 스왑 0인 건 건강한 상태라 굳이 자리를 차지할 이유가 없다.
+    private var memoryDetailText: String {
+        var parts = [String(format: "압축 %.1fGB", memCompressedGB)]
+        if swapUsedGB >= 0.05 { parts.append(String(format: "스왑 %.1fGB", swapUsedGB)) }
+        return parts.joined(separator: "  ·  ")
+    }
+
+    private func memoryDetailRow() -> some View {
+        HStack(spacing: 10) {
+            Color.clear.frame(width: 56, height: 0)  // 위 행의 라벨 폭만큼 들여쓰기
+            Text(memoryDetailText)
+                .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                .foregroundStyle(memLevel == .normal ? Color.secondary : ramColor)
+            Spacer(minLength: 0)
+        }
+    }
+
     private var diskColor: Color { color(for: SystemThresholds.diskLevel(diskFraction)) }
 
     private func color(for level: UsageLevel) -> Color {
