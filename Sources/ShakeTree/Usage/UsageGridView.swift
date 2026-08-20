@@ -58,19 +58,25 @@ private struct ProviderUsageCell: View {
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                         Spacer(minLength: 2)
-                        if let reset = window.resetText {
-                            Text(reset)
-                                .font(.system(size: 9))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                        }
                         Text("\(Int(remaining))% 남음")
                             .font(.system(size: 10, weight: .semibold).monospacedDigit())
                             .foregroundStyle(gaugeColor(remaining))
                             .lineLimit(1)
                     }
-                    // 배터리처럼 남은 양이 줄어드는 게이지
-                    ThinProgressBar(value: remaining / 100, color: gaugeColor(remaining), height: 4)
+                    // 리셋 시각은 게이지 옆에 둔다. 제목 줄에 같이 놓으면 긴 제목
+                    // ("Claude/GPT 세션")과 겹쳐 한 칸의 폭이 그만큼 넓어져야 한다.
+                    HStack(spacing: 5) {
+                        // 배터리처럼 남은 양이 줄어드는 게이지
+                        ThinProgressBar(
+                            value: remaining / 100, color: gaugeColor(remaining), height: 4)
+                        if let reset = window.resetText {
+                            Text(reset)
+                                .font(.system(size: 9).monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                    }
                 }
             }
         }

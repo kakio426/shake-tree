@@ -21,6 +21,7 @@ struct CodexBarEntry: Decodable, Sendable {
     }
 
     struct ExtraWindow: Decodable, Sendable {
+        let id: String
         let title: String
         let window: Window
     }
@@ -168,7 +169,12 @@ final class UsageProvider: ObservableObject {
     }
 
     private static func display(from entry: CodexBarEntry) -> ProviderUsage {
-        let extras = entry.usage.extraRateWindows ?? []
+        // Antigravity는 Gemini 한도와, 그 안에서 쓰는 서드파티 모델(Claude/GPT) 한도를
+        // 따로 준다 — id의 "3p"가 third-party다. Antigravity 안에서 Claude/GPT를 쓸 일이
+        // 없으면 늘 100% 남은 줄이 두 개 붙어 자리만 차지하므로 감춘다.
+        let allExtras = entry.usage.extraRateWindows ?? []
+        let hidden = allExtras.filter { $0.id.contains("-3p-") }
+        let extras = allExtras.filter { !$0.id.contains("-3p-") }
         var windows: [ProviderUsage.WindowDisplay] = []
         var titledAlreadyShown = Set<String>()
 
@@ -178,12 +184,14 @@ final class UsageProvider: ObservableObject {
 
         /// 2열 배치라 한 칸이 좁다. 오늘 리셋되는 창은 시각만, 그 이후는 날짜만 —
         /// 오늘 것은 몇 시에 풀리는지가, 며칠 뒤 것은 며칠인지가 궁금한 정보다.
+        /// "리셋"이라는 말은 붙이지 않는다. 게이지 바로 옆에 놓이는 시각이라 문맥으로
+        /// 읽히고, 그 두 글자가 한 칸의 폭을 잡아먹는다.
         func resetText(_ window: CodexBarEntry.Window) -> String? {
             guard let date = date(window) else { return window.resetDescription }
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "ko_KR")
             formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "M/d"
-            return formatter.string(from: date) + " 리셋"
+            return formatter.string(from: date)
         }
 
         /// 창 길이로 이름을 붙인다. 예전엔 10080분(7일)만 "주간"으로 알아보고 나머지는
@@ -202,22 +210,39 @@ final class UsageProvider: ObservableObject {
         /// (Antigravity는 primary=Gemini 5-hour, secondary=Claude/GPT 5-hour로 겹친다).
         /// 리셋 시각이 사실상 같으면 같은 창으로 보고, 정보가 많은 제목 쪽을 쓴다.
         /// 창마다 조회 시각이 조금씩 달라 몇 분씩 어긋나므로 여유를 둔다.
+        func sameWindow(_ a: CodexBarEntry.Window, _ b: CodexBarEntry.Window) -> Bool {
+            guard a.windowMinutes == b.windowMinutes, let x = date(a), let y = date(b) else {
+                return false
+            }
+            return abs(x.timeIntervalSince(y)) < 600
+        }
+
         func title(matching window: CodexBarEntry.Window) -> String? {
-            guard let target = date(window) else { return nil }
-            return extras.first { extra in
-                extra.window.windowMinutes == window.windowMinutes
-                    && date(extra.window).map { abs($0.timeIntervalSince(target)) < 600 } == true
-            }?.title
+            extras.first { sameWindow(window, $0.window) }?.title
+        }
+
+        /// Antigravity가 주는 영어 제목("Gemini 5-hour")은 좁은 칸에 안 들어가고,
+        /// 다른 프로바이더가 쓰는 세션/주간 표기와도 어긋난다.
+        func shorten(_ title: String) -> String {
+            title
+                .replacingOccurrences(of: "5-hour", with: "세션")
+                .replacingOccurrences(of: "weekly", with: "주간")
+        }
+
+        /// primary/secondary는 감춘 창과 같은 창을 가리키기도 한다 (Antigravity의
+        /// secondary가 곧 "Claude/GPT 5-hour"다). 제목 없이 "세션"으로 되살아나지 않게 막는다.
+        func isHidden(_ window: CodexBarEntry.Window) -> Bool {
+            hidden.contains { sameWindow(window, $0.window) }
         }
 
         func append(_ window: CodexBarEntry.Window?) {
-            guard let window else { return }
+            guard let window, !isHidden(window) else { return }
             let matched = title(matching: window)
             if let matched { titledAlreadyShown.insert(matched) }
             windows.append(
                 .init(
-                    label: matched ?? label(for: window), usedPercent: window.usedPercent,
-                    resetText: resetText(window)))
+                    label: matched.map(shorten) ?? label(for: window),
+                    usedPercent: window.usedPercent, resetText: resetText(window)))
         }
 
         append(entry.usage.primary)
@@ -227,7 +252,7 @@ final class UsageProvider: ObservableObject {
         for extra in extras where !titledAlreadyShown.contains(extra.title) {
             windows.append(
                 .init(
-                    label: extra.title, usedPercent: extra.window.usedPercent,
+                    label: shorten(extra.title), usedPercent: extra.window.usedPercent,
                     resetText: resetText(extra.window)))
         }
 
