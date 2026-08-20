@@ -95,7 +95,11 @@ final class UsageProvider: ObservableObject {
             DispatchQueue.global(qos: .utility).async {
                 let task = Process()
                 task.executableURL = URL(fileURLWithPath: cli)
-                task.arguments = ["usage", "--provider", "both", "--json"]
+                // --source cli: 브라우저 쿠키 대신 각 CLI에 로그인된 계정 기준으로 조회한다.
+                // 기본값(web)은 Chrome 기본 프로필의 claude.ai 쿠키를 읽어서, 브라우저에
+                // 다른 계정이 로그인돼 있으면 정작 내가 쓰는 계정이 아닌 쪽의 사용량(대개 0%)이
+                // 표시된다. 실제로 한도를 쓰는 건 CLI에 로그인된 계정이므로 그쪽을 본다.
+                task.arguments = ["usage", "--provider", "both", "--source", "cli", "--json"]
                 let out = Pipe()
                 task.standardOutput = out
                 task.standardError = Pipe()
@@ -138,12 +142,14 @@ final class UsageProvider: ObservableObject {
             return formatter.string(from: date) + " 리셋"
         }
 
+        /// 창 길이로 이름을 붙인다. 예전엔 10080분(7일)만 "주간"으로 알아보고 나머지는
+        /// fallback으로 흘려서, Codex의 43200분(30일) 한도가 "세션"으로 표시됐다.
         func label(for window: CodexBarEntry.Window, fallback: String) -> String {
             guard let minutes = window.windowMinutes else { return fallback }
             switch minutes {
-            case ..<600: return "세션"
-            case 10080: return "주간"
-            default: return fallback
+            case ..<600: return "세션"  // 5~10시간짜리 롤링 윈도우
+            case ..<20160: return "주간"  // 7일
+            default: return "월간"  // 30일 이상
             }
         }
 
