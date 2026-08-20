@@ -85,7 +85,7 @@ private struct ProviderUsageCell: View {
     private var providerName: String {
         switch usage.provider {
         case "codex": "Codex"
-        case "claude": "Claude"
+        case "claude": "Claude Code"
         case "grok": "Grok"
         case "antigravity": "Antigravity"  // Gemini 한도는 여기로 잡힌다
         default: usage.provider.capitalized

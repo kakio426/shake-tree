@@ -30,7 +30,7 @@ struct CodexBarEntry: Decodable, Sendable {
 /// 표시용으로 정리한 사용량
 struct ProviderUsage: Sendable, Identifiable {
     var id: String { provider }
-    let provider: String  // "codex" / "claude"
+    let provider: String  // "codex" / "claude" / "grok" / "antigravity"
     let plan: String?
     let windows: [WindowDisplay]
 
@@ -103,9 +103,12 @@ final class UsageProvider: ObservableObject {
     /// claude.ai 쿠키를 읽어서, 브라우저에 다른 계정이 로그인돼 있으면 정작 내가 한도를
     /// 쓰고 있는 계정이 아닌 쪽의 사용량(대개 0%)이 표시된다.
     private nonisolated static let queries: [[String]] = [
-        ["usage", "--provider", "both", "--source", "cli", "--json"],
-        ["usage", "--provider", "grok", "--json"],
-        ["usage", "--provider", "antigravity", "--json"],
+        // `--json`은 Codex CLI가 내보내는 상태 메시지가 JSON 앞에 섞일 수 있다.
+        // 그러면 배열 전체가 디코드되지 않아 Codex/Claude 카드가 통째로 사라진다.
+        // 내장 codexbar CLI의 `--json-only`는 stdout을 JSON으로만 제한한다.
+        ["usage", "--provider", "both", "--source", "cli", "--json-only"],
+        ["usage", "--provider", "grok", "--json-only"],
+        ["usage", "--provider", "antigravity", "--json-only"],
     ]
 
     /// 메뉴에 세로로 쌓이는 순서. 조회는 병렬이라 끝나는 순서가 매번 달라서,
@@ -124,10 +127,15 @@ final class UsageProvider: ObservableObject {
             for await part in group { all += part }
             return all
         }
-        return entries.sorted {
-            (providerOrder.firstIndex(of: $0.provider) ?? .max)
-                < (providerOrder.firstIndex(of: $1.provider) ?? .max)
+        // CLI가 예기치 않게 다른 프로바이더도 함께 돌려주는 경우가 있다. 같은 ID가
+        // SwiftUI ForEach에 두 번 들어가면 카드가 누락될 수 있으므로 한 번씩만 남긴다.
+        var entryByProvider: [String: CodexBarEntry] = [:]
+        for entry in entries where providerOrder.contains(entry.provider) {
+            if entryByProvider[entry.provider] == nil {
+                entryByProvider[entry.provider] = entry
+            }
         }
+        return providerOrder.compactMap { entryByProvider[$0] }
     }
 
     private nonisolated static func run(cli: String, args: [String]) async throws -> Data {
@@ -138,7 +146,9 @@ final class UsageProvider: ObservableObject {
                 task.arguments = args
                 let out = Pipe()
                 task.standardOutput = out
-                task.standardError = Pipe()
+                // stderr는 화면에 쓰지 않으면서도, 읽지 않는 Pipe가 가득 차 하위
+                // 프로세스가 멈추는 문제를 피한다.
+                task.standardError = FileHandle.nullDevice
                 do {
                     try task.run()
                     let data = out.fileHandleForReading.readDataToEndOfFile()
@@ -155,9 +165,21 @@ final class UsageProvider: ObservableObject {
     /// 배열 전체를 [CodexBarEntry]로 한 번에 디코드할 때 전체가 실패해버린다.
     /// 항목별로 개별 디코드해서 실패한 프로바이더만 건너뛰고 나머지는 살린다.
     private nonisolated static func decode(_ data: Data) -> [CodexBarEntry] {
+        if let entries = decodeJSONArray(data) { return entries }
+
+        // 이전 버전의 CLI나 하위 CLI가 상태 메시지를 stdout에 쓰더라도 실제 JSON
+        // 배열은 살린다. `--json-only`가 기본 방어선이고, 이 코드는 호환성 안전망이다.
+        for payload in jsonArrayPayloads(in: data) {
+            if let entries = decodeJSONArray(payload) { return entries }
+        }
+        return []
+    }
+
+    /// JSON 배열을 항목별로 디코드한다. 한 프로바이더의 오류가 나머지까지 숨기지 않게 한다.
+    private nonisolated static func decodeJSONArray(_ data: Data) -> [CodexBarEntry]? {
         guard let rawArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else {
-            return (try? JSONDecoder().decode([CodexBarEntry].self, from: data)) ?? []
+            return try? JSONDecoder().decode([CodexBarEntry].self, from: data)
         }
         let decoder = JSONDecoder()
         return rawArray.compactMap { dict in
@@ -166,6 +188,48 @@ final class UsageProvider: ObservableObject {
             }
             return try? decoder.decode(CodexBarEntry.self, from: entryData)
         }
+    }
+
+    /// stdout 앞뒤에 로그가 붙은 경우, 문자열/이스케이프를 고려해 온전한 JSON 배열만 찾는다.
+    private nonisolated static func jsonArrayPayloads(in data: Data) -> [Data] {
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+
+        var payloads: [Data] = []
+        var start: String.Index?
+        var depth = 0
+        var insideString = false
+        var escaped = false
+
+        for index in text.indices {
+            let character = text[index]
+            if insideString {
+                if escaped {
+                    escaped = false
+                } else if character == "\\" {
+                    escaped = true
+                } else if character == "\"" {
+                    insideString = false
+                }
+                continue
+            }
+
+            switch character {
+            case "\"":
+                insideString = true
+            case "[":
+                if depth == 0 { start = index }
+                depth += 1
+            case "]":
+                guard depth > 0 else { continue }
+                depth -= 1
+                if depth == 0, let start {
+                    payloads.append(Data(text[start...index].utf8))
+                }
+            default:
+                break
+            }
+        }
+        return payloads
     }
 
     private static func display(from entry: CodexBarEntry) -> ProviderUsage {
