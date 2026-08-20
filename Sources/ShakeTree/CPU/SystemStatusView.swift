@@ -36,9 +36,9 @@ struct SystemStatusView: View {
                 icon: "internaldrive", label: "저장", fraction: diskFraction, color: diskColor,
                 detail: gbText(diskUsedGB, diskTotalGB))
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, MenuMetrics.horizontalPadding)
         .padding(.vertical, 10)
-        .frame(width: 300)
+        .frame(width: MenuMetrics.panelWidth)
     }
 
     private func percentText(_ f: Double) -> String { "\(Int((f * 100).rounded()))%" }

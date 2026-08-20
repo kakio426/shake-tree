@@ -208,9 +208,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         usageMenuItems.removeAll()
 
         var index = 2
-        for usage in usageProvider.usages {
+        if !usageProvider.usages.isEmpty {
+            // 프로바이더 전부를 2열 그리드 하나로 — 예전엔 프로바이더마다 메뉴 항목을
+            // 따로 만들어 세로로 쌓았다.
             let item = NSMenuItem()
-            let hostingView = NSHostingView(rootView: UsageMenuView(usage: usage))
+            let hostingView = NSHostingView(
+                rootView: UsageGridView(usages: usageProvider.usages))
             hostingView.frame.size = hostingView.fittingSize
             item.view = hostingView
             menu.insertItem(item, at: index)
@@ -223,9 +226,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .truncationMode(.tail)
-            .frame(width: 280, alignment: .leading)
-            .padding(.horizontal, 12)
+            .padding(.horizontal, MenuMetrics.horizontalPadding)
             .padding(.vertical, 2)
+            .frame(width: MenuMetrics.panelWidth, alignment: .leading)
         let statusHost = NSHostingView(rootView: statusView)
         statusHost.frame.size = statusHost.fittingSize
         let statusItem = NSMenuItem()
