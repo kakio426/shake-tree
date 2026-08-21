@@ -3,7 +3,7 @@ import Foundation
 // MARK: - codexbar CLI JSON 모델 (필요한 필드만)
 
 struct CodexBarEntry: Decodable, Sendable {
-    let provider: String
+    var provider: String
     let usage: Usage
 
     struct Usage: Decodable, Sendable {
@@ -30,7 +30,7 @@ struct CodexBarEntry: Decodable, Sendable {
 /// 표시용으로 정리한 사용량
 struct ProviderUsage: Sendable, Identifiable {
     var id: String { provider }
-    let provider: String  // "codex" / "claude" / "grok" / "antigravity"
+    let provider: String  // "codex" / "claude" / "gemini" / "grok"
     let plan: String?
     let windows: [WindowDisplay]
 
@@ -108,12 +108,15 @@ final class UsageProvider: ObservableObject {
         // 내장 codexbar CLI의 `--json-only`는 stdout을 JSON으로만 제한한다.
         ["usage", "--provider", "both", "--source", "cli", "--json-only"],
         ["usage", "--provider", "grok", "--json-only"],
+        ["usage", "--provider", "gemini", "--json-only"],
+        // Gemini CLI에 로그인돼 있지 않을 때의 대체 공급원. Antigravity가 자기 안에서
+        // 쓰는 Gemini 한도를 보고하는데, 그것도 결국 같은 Gemini 사용량이다.
         ["usage", "--provider", "antigravity", "--json-only"],
     ]
 
     /// 메뉴에 세로로 쌓이는 순서. 조회는 병렬이라 끝나는 순서가 매번 달라서,
     /// 그대로 두면 메뉴 항목이 갱신될 때마다 위아래로 뒤바뀐다.
-    private nonisolated static let providerOrder = ["codex", "claude", "grok", "antigravity"]
+    private nonisolated static let providerOrder = ["codex", "claude", "gemini", "grok"]
 
     private nonisolated static func fetch(cli: String) async -> [CodexBarEntry] {
         let entries = await withTaskGroup(of: [CodexBarEntry].self) { group in
@@ -127,10 +130,21 @@ final class UsageProvider: ObservableObject {
             for await part in group { all += part }
             return all
         }
+        // Gemini 사용량은 두 곳에서 올 수 있다. 전용 CLI가 로그인돼 있으면 그쪽이
+        // 정확하고, 없으면 Antigravity가 보고하는 Gemini 한도로 대신한다 — 표시할 땐
+        // 둘 다 그냥 "Gemini"다. 어느 쪽에서 왔는지는 쓰는 사람에게 중요하지 않다.
+        let hasNativeGemini = entries.contains { $0.provider == "gemini" }
+        let normalized = entries.map { entry -> CodexBarEntry in
+            guard entry.provider == "antigravity", !hasNativeGemini else { return entry }
+            var remapped = entry
+            remapped.provider = "gemini"
+            return remapped
+        }
+
         // CLI가 예기치 않게 다른 프로바이더도 함께 돌려주는 경우가 있다. 같은 ID가
         // SwiftUI ForEach에 두 번 들어가면 카드가 누락될 수 있으므로 한 번씩만 남긴다.
         var entryByProvider: [String: CodexBarEntry] = [:]
-        for entry in entries where providerOrder.contains(entry.provider) {
+        for entry in normalized where providerOrder.contains(entry.provider) {
             if entryByProvider[entry.provider] == nil {
                 entryByProvider[entry.provider] = entry
             }
@@ -234,13 +248,10 @@ final class UsageProvider: ObservableObject {
 
     private static func display(from entry: CodexBarEntry) -> ProviderUsage {
         // Antigravity는 Gemini 한도와, 그 안에서 쓰는 서드파티 모델(Claude/GPT) 한도를
-        // 따로 준다 — id의 "3p"가 third-party다. Antigravity 안에서 Claude/GPT를 쓸 일이
-        // 없으면 늘 100% 남은 줄이 두 개 붙어 자리만 차지하므로 감춘다.
+        // 같이 준다 — id의 "3p"가 third-party다. 이 카드는 Gemini 사용량이므로 뺀다.
         let allExtras = entry.usage.extraRateWindows ?? []
-        let hidden = allExtras.filter { $0.id.contains("-3p-") }
         let extras = allExtras.filter { !$0.id.contains("-3p-") }
         var windows: [ProviderUsage.WindowDisplay] = []
-        var titledAlreadyShown = Set<String>()
 
         func date(_ window: CodexBarEntry.Window) -> Date? {
             window.resetsAt.flatMap { ISO8601DateFormatter().date(from: $0) }
@@ -281,44 +292,44 @@ final class UsageProvider: ObservableObject {
             return abs(x.timeIntervalSince(y)) < 600
         }
 
-        func title(matching window: CodexBarEntry.Window) -> String? {
-            extras.first { sameWindow(window, $0.window) }?.title
-        }
-
-        /// Antigravity가 주는 영어 제목("Gemini 5-hour")은 좁은 칸에 안 들어가고,
-        /// 다른 프로바이더가 쓰는 세션/주간 표기와도 어긋난다.
+        /// 영어로 된 창 제목("Gemini 5-hour")을 다른 카드와 같은 세션/주간 표기로 바꾼다.
+        /// 카드 제목이 이미 "Gemini"라 창 이름에 모델명을 또 붙일 필요가 없다.
         func shorten(_ title: String) -> String {
             title
+                .replacingOccurrences(of: "Gemini ", with: "")
                 .replacingOccurrences(of: "5-hour", with: "세션")
                 .replacingOccurrences(of: "weekly", with: "주간")
         }
 
-        /// primary/secondary는 감춘 창과 같은 창을 가리키기도 한다 (Antigravity의
-        /// secondary가 곧 "Claude/GPT 5-hour"다). 제목 없이 "세션"으로 되살아나지 않게 막는다.
-        func isHidden(_ window: CodexBarEntry.Window) -> Bool {
-            hidden.contains { sameWindow(window, $0.window) }
-        }
-
-        func append(_ window: CodexBarEntry.Window?) {
-            guard let window, !isHidden(window) else { return }
-            let matched = title(matching: window)
-            if let matched { titledAlreadyShown.insert(matched) }
-            windows.append(
-                .init(
-                    label: matched.map(shorten) ?? label(for: window),
-                    usedPercent: window.usedPercent, resetText: resetText(window)))
-        }
-
-        append(entry.usage.primary)
-        append(entry.usage.secondary)
-        // 남은 제목 창들. 예전엔 usedPercent > 0인 것만 보여줬는데, 그러면 아직 안 쓴 한도가
-        // 통째로 사라진다 (Antigravity의 Claude/GPT 창이 0%라 안 보이던 문제).
-        for extra in extras where !titledAlreadyShown.contains(extra.title) {
+        // 제목(id)이 붙은 창을 먼저 쓴다. 어떤 한도인지 분명하고 순서도 일정하기 때문이다.
+        // primary/secondary는 그중 일부를 가리키기만 하는데 무엇을 가리킬지가 일정하지
+        // 않다 — Antigravity는 primary가 5시간 창일 때도, 주간 창일 때도 있다.
+        for extra in extras {
             windows.append(
                 .init(
                     label: shorten(extra.title), usedPercent: extra.window.usedPercent,
                     resetText: resetText(extra.window)))
         }
+
+        /// 제목 있는 창이 이미 다룬 한도인지. 감출 서드파티 창까지 함께 대조한다 —
+        /// Antigravity의 Gemini 5시간 창과 Claude/GPT 5시간 창은 리셋 시각이 완전히
+        /// 같아서, 시각만으로는 primary/secondary가 둘 중 어느 쪽인지 가릴 수 없다.
+        /// 어느 쪽이든 제목 있는 창이 그 자리를 채우므로 그냥 건너뛰면 된다.
+        func covered(_ window: CodexBarEntry.Window) -> Bool {
+            allExtras.contains { sameWindow(window, $0.window) }
+        }
+
+        // 제목 있는 창이 아예 없는 프로바이더(Codex/Claude/Grok)는 여기서만 채워진다.
+        func append(_ window: CodexBarEntry.Window?) {
+            guard let window, !covered(window) else { return }
+            windows.append(
+                .init(
+                    label: label(for: window), usedPercent: window.usedPercent,
+                    resetText: resetText(window)))
+        }
+
+        append(entry.usage.primary)
+        append(entry.usage.secondary)
 
         return ProviderUsage(
             provider: entry.provider, plan: entry.usage.loginMethod, windows: windows)

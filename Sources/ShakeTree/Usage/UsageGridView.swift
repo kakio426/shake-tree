@@ -87,7 +87,7 @@ private struct ProviderUsageCell: View {
         case "codex": "Codex"
         case "claude": "Claude Code"
         case "grok": "Grok"
-        case "antigravity": "Antigravity"  // Gemini 한도는 여기로 잡힌다
+        case "gemini": "Gemini"
         default: usage.provider.capitalized
         }
     }
