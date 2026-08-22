@@ -33,6 +33,8 @@ struct ProviderUsage: Sendable, Identifiable {
     let provider: String  // "codex" / "claude" / "gemini" / "grok"
     let plan: String?
     let windows: [WindowDisplay]
+    /// 접힌 부가 한도(Spark 등) — 평소엔 숨기고 카드에서 토글로 펼쳐 본다.
+    let sparkWindows: [WindowDisplay]
 
     struct WindowDisplay: Sendable, Identifiable {
         var id: String { label }
@@ -48,6 +50,11 @@ struct ProviderUsage: Sendable, Identifiable {
 final class UsageProvider: ObservableObject {
     @Published var usages: [ProviderUsage] = []
     @Published var statusText: String = "사용량 불러오는 중…"
+
+    /// 프로바이더별 마지막 성공값. 조회 출처 중 웹 쿠키 기반(Codex oauth, Grok)은
+    /// 브라우저 상태에 따라 한 번씩 실패할 때가 있다 — 그때마다 카드가 깜빡 사라지면
+    /// 산만하므로, 한 번 성공한 값은 다음 성공까지 붙잡아 둔다.
+    private var lastGood: [String: ProviderUsage] = [:]
 
     private var timer: Timer?
     var onUpdate: (() -> Void)?
@@ -82,10 +89,25 @@ final class UsageProvider: ObservableObject {
             // 프로바이더별로 따로 조회하므로 일부만 실패할 수 있다. 성공한 것만이라도
             // 보여주고, 전부 실패했을 때만 이전 값을 남긴 채 상태 줄로 알린다.
             let entries = await Self.fetch(cli: cli)
-            if entries.isEmpty {
+            let fresh = entries.map(Self.display(from:))
+            for usage in fresh { lastGood[usage.provider] = usage }
+
+            // 이번 라운드에서 못 받아온 프로바이더는 마지막 성공값으로 메운다 —
+            // 일시적 실패(쿠키 읽기 경쟁, 네트워크)로 카드가 깜빡 사라지지 않게.
+            var merged = fresh
+            for (provider, usage) in lastGood
+            where !fresh.contains(where: { $0.provider == provider }) {
+                merged.append(usage)
+            }
+            merged.sort {
+                Self.providerOrder.firstIndex(of: $0.provider) ?? .max
+                    < Self.providerOrder.firstIndex(of: $1.provider) ?? .max
+            }
+
+            if merged.isEmpty {
                 self.statusText = "사용량 조회 실패 (로그인 상태 확인)"
             } else {
-                self.usages = entries.map(Self.display(from:))
+                self.usages = merged
                 let time = Date().formatted(date: .omitted, time: .shortened)
                 self.statusText = "업데이트: \(time)"
             }
@@ -93,20 +115,26 @@ final class UsageProvider: ObservableObject {
         }
     }
 
-    /// 한 번의 호출로 다 가져올 수 없어서 프로바이더별로 나눠 부른다.
-    /// `--source`는 호출 전체에 걸리는 옵션인데 프로바이더마다 읽어야 할 곳이 다르기 때문이다:
-    /// Codex/Claude는 CLI에 로그인된 계정(cli), Grok은 브라우저 쿠키, Antigravity는 설치된
-    /// 앱 상태에서 읽는다. `--provider all`은 60개가 넘는 프로바이더를 전부 훑느라 느리고
-    /// 대부분 "로그인 안 됨" 오류만 돌려주므로 쓰지 않는다.
+    /// 한 번의 호출로 다 가져올 수 없어서 나눠 부른다. 배열 순서 = 우선순위.
+    /// 같은 프로바이더가 여러 쿼리에서 돌아오면 앞쪽(정확한) 결과를 쓴다.
     ///
-    /// Codex/Claude에 `--source cli`를 주는 이유: 기본값(web)은 Chrome 기본 프로필의
-    /// claude.ai 쿠키를 읽어서, 브라우저에 다른 계정이 로그인돼 있으면 정작 내가 한도를
-    /// 쓰고 있는 계정이 아닌 쪽의 사용량(대개 0%)이 표시된다.
+    /// 첫 줄에 `--source cli`를 두는 이유: 기본값(web)은 Chrome 기본 프로필의
+    /// claude.ai/chatgpt.com 쿠키를 읽어서, 브라우저에 다른 계정이 로그인돼 있으면
+    /// 정작 내가 한도를 쓰고 있는 계정이 아닌 쪽의 사용량(대개 0%)이 표시된다.
+    /// 그렇다고 cli만 쓰면 안 된다 — 설치된 Codex CLI 버전에 따라 codexbar가 넘기는
+    /// `--ask-for-approval untrusted` 값이 거부되어 Codex 조회가 통째로 실패하는데
+    //(실제 0.149.0에서 재현), oauth(웹 로그인) 경로는 멀쩡히 돌아온다.
+    /// 그래서 cli 성공분을 우선하고, 비어 있으면 web 결과로 채운다.
+    ///
+    /// Grok은 브라우저 쿠키, Antigravity는 설치된 앱 상태에서 읽는다.
+    /// `--provider all`은 60개가 넘는 프로바이더를 전부 훑느라 느리고 대부분
+    /// "로그인 안 됨" 오류만 돌려주므로 쓰지 않는다.
     private nonisolated static let queries: [[String]] = [
-        // `--json`은 Codex CLI가 내보내는 상태 메시지가 JSON 앞에 섞일 수 있다.
-        // 그러면 배열 전체가 디코드되지 않아 Codex/Claude 카드가 통째로 사라진다.
-        // 내장 codexbar CLI의 `--json-only`는 stdout을 JSON으로만 제한한다.
+        // `--json`은 상태 메시지가 JSON 앞에 섞일 수 있다. 그러면 배열 전체가
+        // 디코드되지 않아 카드가 통째로 사라진다. 내장 CLI의 `--json-only`는
+        // stdout을 JSON으로만 제한한다.
         ["usage", "--provider", "both", "--source", "cli", "--json-only"],
+        ["usage", "--provider", "both", "--json-only"],  // 폴백: oauth/웹 소스
         ["usage", "--provider", "grok", "--json-only"],
         ["usage", "--provider", "gemini", "--json-only"],
         // Gemini CLI에 로그인돼 있지 않을 때의 대체 공급원. Antigravity가 자기 안에서
@@ -119,38 +147,54 @@ final class UsageProvider: ObservableObject {
     private nonisolated static let providerOrder = ["codex", "claude", "gemini", "grok"]
 
     private nonisolated static func fetch(cli: String) async -> [CodexBarEntry] {
-        let entries = await withTaskGroup(of: [CodexBarEntry].self) { group in
-            for args in queries {
+        // 쿼리별로 결과를 나눠 받는다 — 같은 프로바이더가 여러 쿼리에서 돌아오면
+        // 우선순위가 높은(배열 앞쪽) 쪽을 남기기 위해서다.
+        let byQuery = await withTaskGroup(
+            of: (index: Int, entries: [CodexBarEntry]).self
+        ) { group in
+            for (index, args) in queries.enumerated() {
                 group.addTask {
-                    guard let data = try? await run(cli: cli, args: args) else { return [] }
-                    return decode(data)
+                    guard let data = try? await run(cli: cli, args: args) else {
+                        return (index, [])
+                    }
+                    return (index, decode(data))
                 }
             }
-            var all: [CodexBarEntry] = []
-            for await part in group { all += part }
-            return all
+            var result = [[CodexBarEntry]](repeating: [], count: queries.count)
+            for await (index, entries) in group { result[index] = entries }
+            return result
         }
+
+        var ranked: [(entry: CodexBarEntry, rank: Int)] = []
+        for (rank, entries) in byQuery.enumerated() {
+            for entry in entries { ranked.append((entry, rank)) }
+        }
+
         // Gemini 사용량은 두 곳에서 올 수 있다. 전용 CLI가 로그인돼 있으면 그쪽이
         // 정확하고, 없으면 Antigravity가 보고하는 Gemini 한도로 대신한다 — 표시할 땐
         // 둘 다 그냥 "Gemini"다. 어느 쪽에서 왔는지는 쓰는 사람에게 중요하지 않다.
-        let hasNativeGemini = entries.contains { $0.provider == "gemini" }
-        let normalized = entries.map { entry -> CodexBarEntry in
-            guard entry.provider == "antigravity", !hasNativeGemini else { return entry }
-            var remapped = entry
+        let hasNativeGemini = ranked.contains { $0.entry.provider == "gemini" }
+        let normalized = ranked.map { item -> (entry: CodexBarEntry, rank: Int) in
+            guard item.entry.provider == "antigravity", !hasNativeGemini else { return item }
+            var remapped = item.entry
             remapped.provider = "gemini"
-            return remapped
+            return (remapped, item.rank)
         }
 
-        // CLI가 예기치 않게 다른 프로바이더도 함께 돌려주는 경우가 있다. 같은 ID가
-        // SwiftUI ForEach에 두 번 들어가면 카드가 누락될 수 있으므로 한 번씩만 남긴다.
-        var entryByProvider: [String: CodexBarEntry] = [:]
-        for entry in normalized where providerOrder.contains(entry.provider) {
-            if entryByProvider[entry.provider] == nil {
-                entryByProvider[entry.provider] = entry
+        // 같은 프로바이더가 여러 출처에서 오면(cl성공 + web 폴백 등) 순위 하나만
+        // 남긴다. 같은 ID가 SwiftUI ForEach에 두 번 들어가면 카드가 누락될 수 있다.
+        var best: [String: (entry: CodexBarEntry, rank: Int)] = [:]
+        for item in normalized where providerOrder.contains(item.entry.provider) {
+            if let current = best[item.entry.provider] {
+                if item.rank < current.rank { best[item.entry.provider] = item }
+            } else {
+                best[item.entry.provider] = item
             }
         }
-        return providerOrder.compactMap { entryByProvider[$0] }
+        return providerOrder.compactMap { best[$0]?.entry }
     }
+
+    private nonisolated static let processTimeout: TimeInterval = 15
 
     private nonisolated static func run(cli: String, args: [String]) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
@@ -165,8 +209,16 @@ final class UsageProvider: ObservableObject {
                 task.standardError = FileHandle.nullDevice
                 do {
                     try task.run()
+                    // 감시자 — CLI가 어쩌다 멈추면 종료시켜 파이프 EOF로 만든다.
+                    // 안 그러면 readDataToEndOfFile이 영원히 돌아오지 않는다.
+                    let watchdog = DispatchWorkItem {
+                        if task.isRunning { task.terminate() }
+                    }
+                    DispatchQueue.global(qos: .utility).asyncAfter(
+                        deadline: .now() + processTimeout, execute: watchdog)
                     let data = out.fileHandleForReading.readDataToEndOfFile()
                     task.waitUntilExit()
+                    watchdog.cancel()
                     continuation.resume(returning: data)
                 } catch {
                     continuation.resume(throwing: error)
@@ -250,8 +302,13 @@ final class UsageProvider: ObservableObject {
         // Antigravity는 Gemini 한도와, 그 안에서 쓰는 서드파티 모델(Claude/GPT) 한도를
         // 같이 준다 — id의 "3p"가 third-party다. 이 카드는 Gemini 사용량이므로 뺀다.
         let allExtras = entry.usage.extraRateWindows ?? []
-        let extras = allExtras.filter { !$0.id.contains("-3p-") }
+        let nonThirdParty = allExtras.filter { !$0.id.contains("-3p-") }
+        // Spark 한도는 잘 안 쓰는 부가 창이라 접어서 따로 모은다 —
+        // 카드의 "Spark" 토글을 눌러야 펼쳐진다.
+        let sparkExtras = nonThirdParty.filter { $0.id.lowercased().contains("spark") }
+        let extras = nonThirdParty.filter { !$0.id.lowercased().contains("spark") }
         var windows: [ProviderUsage.WindowDisplay] = []
+        var sparkWindows: [ProviderUsage.WindowDisplay] = []
 
         func date(_ window: CodexBarEntry.Window) -> Date? {
             window.resetsAt.flatMap { ISO8601DateFormatter().date(from: $0) }
@@ -296,9 +353,11 @@ final class UsageProvider: ObservableObject {
         /// 카드 제목이 이미 "Gemini"라 창 이름에 모델명을 또 붙일 필요가 없다.
         func shorten(_ title: String) -> String {
             title
+                .replacingOccurrences(of: "Codex ", with: "")
                 .replacingOccurrences(of: "Gemini ", with: "")
                 .replacingOccurrences(of: "5-hour", with: "세션")
                 .replacingOccurrences(of: "weekly", with: "주간")
+                .replacingOccurrences(of: "Weekly", with: "주간")
         }
 
         // 제목(id)이 붙은 창을 먼저 쓴다. 어떤 한도인지 분명하고 순서도 일정하기 때문이다.
@@ -306,6 +365,12 @@ final class UsageProvider: ObservableObject {
         // 않다 — Antigravity는 primary가 5시간 창일 때도, 주간 창일 때도 있다.
         for extra in extras {
             windows.append(
+                .init(
+                    label: shorten(extra.title), usedPercent: extra.window.usedPercent,
+                    resetText: resetText(extra.window)))
+        }
+        for extra in sparkExtras {
+            sparkWindows.append(
                 .init(
                     label: shorten(extra.title), usedPercent: extra.window.usedPercent,
                     resetText: resetText(extra.window)))
@@ -332,6 +397,7 @@ final class UsageProvider: ObservableObject {
         append(entry.usage.secondary)
 
         return ProviderUsage(
-            provider: entry.provider, plan: entry.usage.loginMethod, windows: windows)
+            provider: entry.provider, plan: entry.usage.loginMethod, windows: windows,
+            sparkWindows: sparkWindows)
     }
 }
