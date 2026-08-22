@@ -1,139 +1,46 @@
 import AppKit
-import ServiceManagement
 import SwiftUI
 
+/// 앱 조립과 생명주기만 담당한다. 화면 상태와 동작은 AppModel이, 메뉴바 아이콘은
+/// TreeAnimator가 맡는다. 종전에는 NSMenu 구축·갱신·알럿까지 여기서 다 했는데,
+/// 패널 전환 후엔 "감시기 → 모델 → 뷰" 흐름만 연결한다.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var animator: TreeAnimator!
+    private var statsTimer: Timer?
+
     private let cpuMonitor = CPUMonitor()
     private let memoryMonitor = MemoryMonitor()
     private let memoryPressureMonitor = MemoryPressureMonitor()
     private let swapMonitor = SwapMonitor()
     private let diskMonitor = DiskMonitor()
-    private var statsTimer: Timer?
-    private var systemStatusItem: NSMenuItem!
-    private var systemStatusHost: NSHostingView<SystemStatusView>!
+
+    private let keepAwake = KeepAwake()
+    private let clipboardWatcher = ClipboardWatcher()
+    private let screenshotWatcher = ScreenshotWatcher()
+    private let usageProvider = UsageProvider()
+    private let historyPanel = HistoryPanelController()
+
+    private lazy var model = AppModel(keepAwake: keepAwake)
+    private lazy var mainPanel = MainPanelController(model: model)
+    private var hotKey: HotKey?
+
     private var cpuHistory: [Double] = []
     private var memHistory: [Double] = []
     private let historyCapacity = 120  // 0.5초 간격 x 120 = 최근 1분
-
-    private let clipboardWatcher = ClipboardWatcher()
-    private let historyPanel = HistoryPanelController()
-    private var hotKey: HotKey?
-    private let screenshotWatcher = ScreenshotWatcher()
-    private var screenshotBothItem: NSMenuItem!
-    private var screenshotClipItem: NSMenuItem!
-    private let usageProvider = UsageProvider()
-    private let keepAwake = KeepAwake()
-    private var keepAwakeItem: NSMenuItem!
-    private var keepAwakeOptions: [(title: String, minutes: Int?)] = []
-    private var menu: NSMenu!
-    private var usageMenuItems: [NSMenuItem] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = statusItem.button else { return }
         animator = TreeAnimator(button: button)
+        mainPanel.anchorButton = button
         historyPanel.anchorButton = button
 
-        let menu = NSMenu()
-        self.menu = menu
+        wireModel()
+        refreshKeepAwakeState()
 
-        let initialStatus = SystemStatusView(
-            cpuFraction: 0, cpuHistory: [], memHistory: [], memLevel: .normal,
-            memUsedGB: 0, memTotalGB: 0, memCompressedGB: 0, swapUsedGB: 0,
-            diskFraction: 0, diskUsedGB: 0, diskTotalGB: 0)
-        let statusHost = NSHostingView(rootView: initialStatus)
-        statusHost.frame.size = statusHost.fittingSize
-        systemStatusHost = statusHost
-        systemStatusItem = NSMenuItem()
-        systemStatusItem.view = statusHost
-        menu.addItem(systemStatusItem)
-        menu.addItem(.separator())
-
-        let historyItem = NSMenuItem(
-            title: "클립보드 히스토리", action: #selector(showHistory), keyEquivalent: "V")
-        historyItem.keyEquivalentModifierMask = [.command, .shift]
-        historyItem.target = self
-        menu.addItem(historyItem)
-
-        let screenshotParent = NSMenuItem(title: "스크린샷 저장 방식", action: nil, keyEquivalent: "")
-        let screenshotSub = NSMenu()
-        screenshotBothItem = NSMenuItem(
-            title: "다운로드 + 클립보드", action: #selector(setScreenshotModeBoth), keyEquivalent: "")
-        screenshotBothItem.target = self
-        screenshotClipItem = NSMenuItem(
-            title: "클립보드만 (파일 저장 안 함)", action: #selector(setScreenshotModeClipboard),
-            keyEquivalent: "")
-        screenshotClipItem.target = self
-        screenshotSub.addItem(screenshotBothItem)
-        screenshotSub.addItem(screenshotClipItem)
-        screenshotParent.submenu = screenshotSub
-        menu.addItem(screenshotParent)
-        refreshScreenshotMenu()
-
-        menu.addItem(.separator())
-
-        // 잠들지 않기 (Amphetamine)
-        keepAwakeItem = NSMenuItem(title: "잠들지 않기", action: nil, keyEquivalent: "")
-        let awakeSub = NSMenu()
-        keepAwakeOptions = [
-            ("무기한", nil), ("30분", 30), ("1시간", 60), ("2시간", 120), ("4시간", 240),
-        ]
-        for (i, opt) in keepAwakeOptions.enumerated() {
-            let it = NSMenuItem(
-                title: opt.title, action: #selector(setKeepAwake(_:)), keyEquivalent: "")
-            it.target = self
-            it.tag = i
-            awakeSub.addItem(it)
-        }
-        awakeSub.addItem(.separator())
-        let offItem = NSMenuItem(
-            title: "끄기", action: #selector(setKeepAwake(_:)), keyEquivalent: "")
-        offItem.target = self
-        offItem.tag = -1
-        awakeSub.addItem(offItem)
-        keepAwakeItem.submenu = awakeSub
-        menu.addItem(keepAwakeItem)
-        keepAwake.onChange = { [weak self] in
-            self?.refreshKeepAwakeMenu()
-            self?.animator.setAwake(self?.keepAwake.isActive ?? false)
-        }
-        refreshKeepAwakeMenu()
-
-        menu.addItem(.separator())
-
-        let settingsMenu = NSMenu()
-        let loginItem = NSMenuItem(
-            title: "로그인 시 자동 실행", action: #selector(toggleLoginItem), keyEquivalent: "")
-        loginItem.target = self
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        settingsMenu.addItem(loginItem)
-
-        let autoPasteItem = NSMenuItem(
-            title: "히스토리 선택 시 자동 붙여넣기", action: #selector(toggleAutoPaste),
-            keyEquivalent: "")
-        autoPasteItem.target = self
-        autoPasteItem.state = UserDefaults.standard.bool(forKey: "autoPaste") ? .on : .off
-        settingsMenu.addItem(autoPasteItem)
-
-        settingsMenu.addItem(.separator())
-        let clearItem = NSMenuItem(
-            title: "히스토리 비우기 (핀 제외)", action: #selector(clearHistory), keyEquivalent: "")
-        clearItem.target = self
-        settingsMenu.addItem(clearItem)
-
-        let settingsItem = NSMenuItem(title: "설정", action: nil, keyEquivalent: "")
-        settingsItem.submenu = settingsMenu
-        menu.addItem(settingsItem)
-
-        menu.addItem(.separator())
-        menu.addItem(
-            NSMenuItem(title: "Shake Tree 종료", action: #selector(quit), keyEquivalent: "q"))
-        menu.items.last?.target = self
-
-        // 좌클릭 = 메뉴 열기, 우클릭(또는 control-클릭) = 잠들지 않기 토글.
+        // 좌클릭 = 패널 열기/닫기, 우클릭(또는 control-클릭) = 잠들지 않기 토글.
         // 그래서 statusItem.menu 를 고정하지 않고 버튼 액션으로 직접 처리한다.
         button.action = #selector(statusItemClicked)
         button.target = self
@@ -142,20 +49,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboardWatcher.start()
         // both 모드에서만 파일 감시가 필요하다 (clipboardOnly는 macOS가 직접 처리).
         if ScreenshotMode.current == .both { screenshotWatcher.start() }
-        usageProvider.onUpdate = { [weak self] in self?.rebuildUsageMenuItems() }
         usageProvider.start()
-        hotKey = HotKey { [weak self] in self?.historyPanel.toggle() }
+        hotKey = HotKey { [historyPanel] in historyPanel.toggle() }
 
         // accessory 앱은 분산 알림이 기본 보류되므로 즉시 전달로 등록 (스크립팅/테스트용)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(handleShowPanel),
+        let center = DistributedNotificationCenter.default()
+        center.addObserver(
+            self, selector: #selector(handleShowHistoryPanel),
             name: Notification.Name("dev.yubyeongju.shaketree.show-panel"), object: nil,
             suspensionBehavior: .deliverImmediately)
-        DistributedNotificationCenter.default().addObserver(
+        center.addObserver(
             self, selector: #selector(handleShowMenu),
             name: Notification.Name("dev.yubyeongju.shaketree.show-menu"), object: nil,
             suspensionBehavior: .deliverImmediately)
-        DistributedNotificationCenter.default().addObserver(
+        center.addObserver(
             self, selector: #selector(handleToggleAwake),
             name: Notification.Name("dev.yubyeongju.shaketree.toggle-awake"), object: nil,
             suspensionBehavior: .deliverImmediately)
@@ -168,6 +75,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         statsTimer = timer
+    }
+
+    /// 모델의 주입 지점에 실제 서비스를 연결한다.
+    private func wireModel() {
+        model.startScreenshotWatcher = { [screenshotWatcher] start in
+            start ? screenshotWatcher.start() : screenshotWatcher.stop()
+        }
+        model.showHistoryPanel = { [historyPanel] in historyPanel.show() }
+
+        // 사용량 조회 결과가 바뀔 때마다 모델로 밀어 넣는다 (→ 패널 자동 갱신)
+        model.usageStatusText = usageProvider.statusText
+        usageProvider.onUpdate = { [weak self] in
+            guard let self else { return }
+            self.model.usages = self.usageProvider.usages
+            self.model.usageStatusText = self.usageProvider.statusText
+        }
+
+        keepAwake.onChange = { [weak self] in self?.refreshKeepAwakeState() }
+    }
+
+    /// KeepAwake 상태가 바지면 아이콘 점과 모델(→패널 표시)을 함께 갱신한다.
+    private func refreshKeepAwakeState() {
+        animator?.setAwake(keepAwake.isActive)
+        model.syncAwake(from: keepAwake)
+    }
+
+    @objc private func handleShowHistoryPanel() {
+        historyPanel.show()
+    }
+
+    /// 스크립트용 — 패널을 열고 잠시 뒤 자동으로 닫는다 (종전 메뉴 취소 동작과 동일).
+    @objc private func handleShowMenu() {
+        mainPanel.show()
+        let timer = Timer(timeInterval: 3.0, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.mainPanel.close() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc private func handleToggleAwake() {
+        keepAwake.toggle()
+    }
+
+    /// 좌클릭=패널, 우클릭/control-클릭=잠들지 않기 토글
+    @objc private func statusItemClicked() {
+        let event = NSApp.currentEvent
+        let isRight =
+            event?.type == .rightMouseUp
+            || (event?.modifierFlags.contains(.control) ?? false)
+        if isRight {
+            keepAwake.toggle()
+        } else {
+            mainPanel.toggle()
+        }
     }
 
     private func refreshSystemStats() {
@@ -185,214 +146,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // macOS가 남는 RAM을 파일 캐시로 항상 꽉 채우는 게 정상이라 %만 보면 늘 빨간색이 된다.
         let level = SystemThresholds.worse(
             SystemThresholds.cpuLevel(cpu), memoryPressureMonitor.level)
-        switch level {
-        case .critical: animator.setWarningColor(.systemRed)
-        case .warning: animator.setWarningColor(.systemOrange)
-        case .normal: animator.setWarningColor(nil)
-        }
+        animator.setWarningColor(Theme.warningColor(for: level))
 
         let swap = swapMonitor.sample()
         let disk = diskMonitor.sample()
-        systemStatusHost.rootView = SystemStatusView(
-            cpuFraction: cpu, cpuHistory: cpuHistory,
-            memHistory: memHistory, memLevel: memoryPressureMonitor.level,
-            memUsedGB: mem.usedGB, memTotalGB: mem.totalGB,
-            memCompressedGB: mem.compressedGB, swapUsedGB: swap.usedGB,
-            diskFraction: disk.usedFraction, diskUsedGB: disk.usedGB, diskTotalGB: disk.totalGB)
-        systemStatusHost.frame.size = systemStatusHost.fittingSize
-    }
-
-    /// CPU 항목 아래(인덱스 2부터)에 사용량 게이지 + 상태 줄을 다시 채운다.
-    private func rebuildUsageMenuItems() {
-        for item in usageMenuItems { menu.removeItem(item) }
-        usageMenuItems.removeAll()
-
-        var index = 2
-        if !usageProvider.usages.isEmpty {
-            // 프로바이더 전부를 2열 그리드 하나로 — 예전엔 프로바이더마다 메뉴 항목을
-            // 따로 만들어 세로로 쌓았다.
-            let item = NSMenuItem()
-            let hostingView = NSHostingView(
-                rootView: UsageGridView(usages: usageProvider.usages))
-            hostingView.frame.size = hostingView.fittingSize
-            item.view = hostingView
-            menu.insertItem(item, at: index)
-            usageMenuItems.append(item)
-            index += 1
-        }
-
-        let statusView = Text(usageProvider.statusText)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .padding(.horizontal, MenuMetrics.horizontalPadding)
-            .padding(.vertical, 2)
-            .frame(width: MenuMetrics.panelWidth, alignment: .leading)
-        let statusHost = NSHostingView(rootView: statusView)
-        statusHost.frame.size = statusHost.fittingSize
-        let statusItem = NSMenuItem()
-        statusItem.view = statusHost
-        statusItem.isEnabled = false
-        menu.insertItem(statusItem, at: index)
-        usageMenuItems.append(statusItem)
-        menu.insertItem(.separator(), at: index + 1)
-        usageMenuItems.append(menu.item(at: index + 1)!)
-    }
-
-    @objc private func showHistory() {
-        historyPanel.show()
-    }
-
-    @objc private func handleShowPanel() {
-        historyPanel.show()
-    }
-
-    @objc private func handleShowMenu() {
-        let timer = Timer(timeInterval: 3.0, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.menu.cancelTracking() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        openMenu()
-    }
-
-    @objc private func handleToggleAwake() {
-        keepAwake.toggle()
-    }
-
-    /// 좌클릭=메뉴, 우클릭/control-클릭=잠들지 않기 토글
-    @objc private func statusItemClicked() {
-        let event = NSApp.currentEvent
-        let isRight =
-            event?.type == .rightMouseUp
-            || (event?.modifierFlags.contains(.control) ?? false)
-        if isRight {
-            keepAwake.toggle()
-        } else {
-            openMenu()
-        }
-    }
-
-    /// statusItem.menu 를 잠시 붙였다 떼는 방식으로 메뉴를 연다 (버튼 하이라이트 포함).
-    private func openMenu() {
-        statusItem.menu = menu
-        statusItem.button?.performClick(nil)
-        statusItem.menu = nil
-    }
-
-    @objc private func setKeepAwake(_ sender: NSMenuItem) {
-        if sender.tag < 0 {
-            keepAwake.disable()
-        } else {
-            let minutes = keepAwakeOptions[sender.tag].minutes
-            keepAwake.enable(duration: minutes.map { TimeInterval($0 * 60) })
-        }
-    }
-
-    private func refreshKeepAwakeMenu() {
-        let active = keepAwake.isActive
-        // 부모 항목: 활성 상태 표시
-        if active {
-            if let endsAt = keepAwake.endsAt {
-                let f = DateFormatter()
-                f.locale = Locale(identifier: "ko_KR")
-                f.dateFormat = "HH:mm"
-                keepAwakeItem.title = "잠들지 않기 · \(f.string(from: endsAt))까지"
-            } else {
-                keepAwakeItem.title = "잠들지 않기 · 켜짐(무기한)"
-            }
-        } else {
-            keepAwakeItem.title = "잠들지 않기"
-        }
-        keepAwakeItem.state = active ? .on : .off
-
-        // 서브메뉴 체크마크: 무기한만 상태 표시(지속시간은 진행형이라 생략), 끄기는 비활성 시 체크
-        for item in keepAwakeItem.submenu?.items ?? [] {
-            if item.tag == 0 {
-                item.state = (active && keepAwake.endsAt == nil) ? .on : .off
-            } else if item.tag == -1 {
-                item.state = active ? .off : .on
-            } else {
-                item.state = .off
-            }
-        }
-    }
-
-    @objc private func setScreenshotModeBoth() { applyScreenshotMode(.both) }
-    @objc private func setScreenshotModeClipboard() { applyScreenshotMode(.clipboardOnly) }
-
-    private func applyScreenshotMode(_ mode: ScreenshotMode) {
-        let previous = ScreenshotMode.current
-        UserDefaults.standard.set(mode.rawValue, forKey: "screenshotMode")
-        ScreenshotWatcher.applyMode(mode)
-        if mode == .both {
-            screenshotWatcher.start()
-        } else {
-            screenshotWatcher.stop()
-        }
-        refreshScreenshotMenu()
-
-        // 모드가 실제로 바뀐 첫 순간에만 안내 (썸네일 끔 + 각 모드 동작 설명)
-        guard mode != previous else { return }
-        let alert = NSAlert()
-        alert.messageText = "스크린샷 저장 방식 변경됨"
-        switch mode {
-        case .both:
-            alert.informativeText =
-                "이제 스크린샷이 다운로드 폴더에 저장되고 동시에 클립보드에도 복사됩니다.\n"
-                + "빠른 반영을 위해 캡처 후 뜨는 '미리보기 썸네일'은 꺼집니다."
-        case .clipboardOnly:
-            alert.informativeText =
-                "이제 스크린샷이 파일로 저장되지 않고 클립보드로만 바로 복사됩니다.\n"
-                + "빠른 반영을 위해 캡처 후 뜨는 '미리보기 썸네일'은 꺼집니다."
-        }
-        alert.runModal()
-    }
-
-    private func refreshScreenshotMenu() {
-        let mode = ScreenshotMode.current
-        screenshotBothItem?.state = (mode == .both) ? .on : .off
-        screenshotClipItem?.state = (mode == .clipboardOnly) ? .on : .off
-    }
-
-    @objc private func toggleLoginItem(_ sender: NSMenuItem) {
-        let service = SMAppService.mainApp
-        do {
-            if service.status == .enabled {
-                try service.unregister()
-            } else {
-                try service.register()
-            }
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "로그인 항목 변경 실패"
-            alert.informativeText = error.localizedDescription
-            alert.runModal()
-        }
-        sender.state = service.status == .enabled ? .on : .off
-    }
-
-    @objc private func toggleAutoPaste(_ sender: NSMenuItem) {
-        let newValue = !UserDefaults.standard.bool(forKey: "autoPaste")
-        UserDefaults.standard.set(newValue, forKey: "autoPaste")
-        sender.state = newValue ? .on : .off
-        if newValue && !Paster.canPaste {
-            Paster.requestAccessibilityPermission()
-        }
-    }
-
-    @objc private func clearHistory() {
-        let alert = NSAlert()
-        alert.messageText = "클립보드 히스토리 비우기"
-        alert.informativeText = "핀 고정된 항목을 제외한 모든 히스토리를 삭제합니다."
-        alert.addButton(withTitle: "비우기")
-        alert.addButton(withTitle: "취소")
-        if alert.runModal() == .alertFirstButtonReturn {
-            ClipboardStore.shared.deleteAllUnpinned()
-        }
-    }
-
-    @objc private func quit() {
-        NSApp.terminate(nil)
+        model.cpuFraction = cpu
+        model.cpuHistory = cpuHistory
+        model.memHistory = memHistory
+        model.memLevel = memoryPressureMonitor.level
+        model.memUsedGB = mem.usedGB
+        model.memTotalGB = mem.totalGB
+        model.memCompressedGB = mem.compressedGB
+        model.swapUsedGB = swap.usedGB
+        model.diskFraction = disk.usedFraction
+        model.diskUsedGB = disk.usedGB
+        model.diskTotalGB = disk.totalGB
     }
 }

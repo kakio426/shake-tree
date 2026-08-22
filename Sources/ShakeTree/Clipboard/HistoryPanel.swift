@@ -1,13 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// 앱을 활성화하지 않고도 키 입력을 받는 플로팅 패널.
-/// 닫으면 포커스가 원래 앱으로 자연스럽게 돌아가 바로 붙여넣기가 가능하다.
-final class FloatingPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
-}
-
+/// 클립보드 히스토리 플로팅 패널 — 검색·선택·자동 붙여넣기를 담당한다.
+/// 패널 외관과 위치잡기는 공용 FloatingPanel이 맡는다.
 @MainActor
 final class HistoryPanelController {
     private var panel: FloatingPanel?
@@ -15,6 +10,9 @@ final class HistoryPanelController {
     private var resignObserver: NSObjectProtocol?
     /// 패널을 열기 직전에 앞에 있던 앱 — 붙여넣기/포커스 복귀 대상
     private var previousApp: NSRunningApplication?
+    /// 포커스 이동으로 자동 닫힌 직후 시각 — 아이콘 재클릭 시 "닫힘→재오픈"
+    /// 충돌을 막는 유예 창용 (메인 패널과 같은 규칙).
+    private var lastAutoClose = Date.distantPast
 
     static let panelWidth: CGFloat = 380
     static let panelHeight: CGFloat = 440
@@ -31,6 +29,8 @@ final class HistoryPanelController {
     }
 
     func show() {
+        guard Date().timeIntervalSince(lastAutoClose) > 0.35 else { return }
+
         // 활성화 직전의 앞 앱을 기억 (붙여넣기/포커스 복귀 대상)
         let front = NSWorkspace.shared.frontmostApplication
         if front?.bundleIdentifier != Bundle.main.bundleIdentifier {
@@ -42,7 +42,7 @@ final class HistoryPanelController {
         viewModel.reload()
         viewModel.searchText = ""
         viewModel.selectedIndex = 0
-        positionUnderMenuBar(panel)
+        panel.positionBelow(anchorButton: anchorButton)
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
     }
@@ -52,17 +52,9 @@ final class HistoryPanelController {
     }
 
     private func makePanel() -> FloatingPanel {
-        let panel = FloatingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight),
-            styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView],
-            backing: .buffered, defer: false)
-        panel.level = .popUpMenu
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: HistoryView(model: viewModel))
+        let panel = FloatingPanel.makePopover(
+            contentView: host, width: Self.panelWidth)
 
         viewModel.onSelect = { [weak self] item in
             ClipboardWatcher.copyToPasteboard(item)
@@ -87,33 +79,13 @@ final class HistoryPanelController {
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.close() }
+            MainActor.assumeIsolated {
+                self?.lastAutoClose = Date()
+                self?.close()
+            }
         }
 
-        let host = NSHostingView(rootView: HistoryView(model: viewModel))
-        panel.contentView = host
         return panel
-    }
-
-    /// 메뉴바 아이콘 바로 아래에, 화면 밖으로 넘치지 않게 위치시킨다.
-    private func positionUnderMenuBar(_ panel: NSPanel) {
-        let size = panel.frame.size
-        let screen =
-            anchorButton?.window?.screen
-            ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
-            ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return }
-
-        var x: CGFloat
-        if let buttonFrame = anchorButton?.window?.frame {
-            // 아이콘 중심에 패널을 맞추되 오른쪽 가장자리를 살짝 넘어가지 않게
-            x = buttonFrame.midX - size.width / 2
-        } else {
-            x = visible.maxX - size.width - 8
-        }
-        x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
-        let y = visible.maxY - size.height  // 상단(메뉴바 바로 아래)에 붙임
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 }
 
