@@ -18,6 +18,9 @@ struct CodexBarEntry: Decodable, Sendable {
         let resetsAt: String?
         let resetDescription: String?
         let windowMinutes: Int?
+        /// 웹 소스가 로그인 안 된 브라우저 계정을 읽었을 때 채우는 가짜 0% 창.
+        /// 이런 창뿐인 엔트리는 정보가 없으므로 폐기한다.
+        let isSyntheticPlaceholder: Bool?
     }
 
     struct ExtraWindow: Decodable, Sendable {
@@ -28,7 +31,7 @@ struct CodexBarEntry: Decodable, Sendable {
 }
 
 /// 표시용으로 정리한 사용량
-struct ProviderUsage: Sendable, Identifiable {
+struct ProviderUsage: Sendable, Identifiable, Codable {
     var id: String { provider }
     let provider: String  // "codex" / "claude" / "gemini" / "grok"
     let plan: String?
@@ -36,8 +39,10 @@ struct ProviderUsage: Sendable, Identifiable {
     /// 접힌 부가 한도(Spark 등) — 평소엔 숨기고 카드에서 토글로 펼쳐 본다.
     let sparkWindows: [WindowDisplay]
 
-    struct WindowDisplay: Sendable, Identifiable {
-        var id: String { label }
+    struct WindowDisplay: Sendable, Identifiable, Codable {
+        // 같은 "1주일" 창이 두 개일 수도 있어 라벨만으로는 id가 겹친다 — 조립 시점에
+        // 고유 id를 붙여 준다.
+        let id: String
         let label: String
         let usedPercent: Double
         let resetText: String?
@@ -55,6 +60,12 @@ final class UsageProvider: ObservableObject {
     /// 브라우저 상태에 따라 한 번씩 실패할 때가 있다 — 그때마다 카드가 깜빡 사라지면
     /// 산만하므로, 한 번 성공한 값은 다음 성공까지 붙잡아 둔다.
     private var lastGood: [String: ProviderUsage] = [:]
+
+    init() {
+        // 앱 재시작 직후에도 마지막 값을 곧바로 보여준다 — 켤 때마다 카드가
+        // 싹 사라졌다 채워지는 깜빡임을 막는다.
+        loadLastGoodFromDisk()
+    }
 
     private var timer: Timer?
     var onUpdate: (() -> Void)?
@@ -91,6 +102,7 @@ final class UsageProvider: ObservableObject {
             let entries = await Self.fetch(cli: cli)
             let fresh = entries.map(Self.display(from:))
             for usage in fresh { lastGood[usage.provider] = usage }
+            saveLastGoodToDisk()
 
             // 이번 라운드에서 못 받아온 프로바이더는 마지막 성공값으로 메운다 —
             // 일시적 실패(쿠키 읽기 경쟁, 네트워크)로 카드가 깜빡 사라지지 않게.
@@ -115,6 +127,41 @@ final class UsageProvider: ObservableObject {
         }
     }
 
+    // MARK: - 마지막 성공값 캐시 (디스크)
+
+    private struct UsageCache: Codable {
+        var savedAt: Date
+        var usages: [ProviderUsage]
+    }
+
+    private var cacheURL: URL? {
+        guard
+            let dir = try? FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true)
+        else { return nil }
+        return dir
+            .appendingPathComponent("ShakeTree", isDirectory: true)
+            .appendingPathComponent("usage-cache.json")
+    }
+
+    private func loadLastGoodFromDisk() {
+        guard let url = cacheURL,
+            let data = try? Data(contentsOf: url),
+            let cache = try? JSONDecoder().decode(UsageCache.self, from: data)
+        else { return }
+        for usage in cache.usages { lastGood[usage.provider] = usage }
+    }
+
+    private func saveLastGoodToDisk() {
+        guard let url = cacheURL else { return }
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let cache = UsageCache(savedAt: Date(), usages: Array(lastGood.values))
+        guard let data = try? JSONEncoder().encode(cache) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
     /// 한 번의 호출로 다 가져올 수 없어서 나눠 부른다. 배열 순서 = 우선순위.
     /// 같은 프로바이더가 여러 쿼리에서 돌아오면 앞쪽(정확한) 결과를 쓴다.
     ///
@@ -129,12 +176,13 @@ final class UsageProvider: ObservableObject {
     /// Grok은 브라우저 쿠키, Antigravity는 설치된 앱 상태에서 읽는다.
     /// `--provider all`은 60개가 넘는 프로바이더를 전부 훑느라 느리고 대부분
     /// "로그인 안 됨" 오류만 돌려주므로 쓰지 않는다.
-    private nonisolated static let queries: [[String]] = [
-        // `--json`은 상태 메시지가 JSON 앞에 섞일 수 있다. 그러면 배열 전체가
+    private nonisolated static let queries: [[String]] = [        // `--json`은 상태 메시지가 JSON 앞에 섞일 수 있다. 그러면 배열 전체가
         // 디코드되지 않아 카드가 통째로 사라진다. 내장 CLI의 `--json-only`는
         // stdout을 JSON으로만 제한한다.
         ["usage", "--provider", "both", "--source", "cli", "--json-only"],
-        ["usage", "--provider", "both", "--json-only"],  // 폴백: oauth/웹 소스
+        // 폴백은 codex만 — both로 두 번 조회하면 Claude 세션을 cli와 웹이 동시에
+        // 읽으며 경쟁해 정상 cli조차 0%를 뱉는다(실측). Claude는 어차피 cli가 정답.
+        ["usage", "--provider", "codex", "--json-only"],
         ["usage", "--provider", "grok", "--json-only"],
         ["usage", "--provider", "gemini", "--json-only"],
         // Gemini CLI에 로그인돼 있지 않을 때의 대체 공급원. Antigravity가 자기 안에서
@@ -170,6 +218,14 @@ final class UsageProvider: ObservableObject {
             for entry in entries { ranked.append((entry, rank)) }
         }
 
+        // 합성 플레이스홀더(웹 소스가 다른 브라우저 계정을 읽어 채우는 가짜 0%)는
+        // 그대로 두면 실제 사용량 대신 "100% 남음"을 보여준다 — 폐기한다.
+        func synthetic(_ entry: CodexBarEntry) -> Bool {
+            let windows = [entry.usage.primary, entry.usage.secondary].compactMap { $0 }
+            return !windows.isEmpty && windows.allSatisfy { $0.isSyntheticPlaceholder == true }
+        }
+        ranked = ranked.filter { !synthetic($0.entry) }
+
         // Gemini 사용량은 두 곳에서 올 수 있다. 전용 CLI가 로그인돼 있으면 그쪽이
         // 정확하고, 없으면 Antigravity가 보고하는 Gemini 한도로 대신한다 — 표시할 땐
         // 둘 다 그냥 "Gemini"다. 어느 쪽에서 왔는지는 쓰는 사람에게 중요하지 않다.
@@ -194,7 +250,10 @@ final class UsageProvider: ObservableObject {
         return providerOrder.compactMap { best[$0]?.entry }
     }
 
-    private nonisolated static let processTimeout: TimeInterval = 15
+    /// 30초 — cli 소스 조회는 codex app-server를 띄우느라 혼자 실행할 때보다
+    /// 동시 조회 시 훨씬 느려진다(실측 21초). 15초로 잡았다가 정상 결과를 통째로
+    /// 죽이고 웹 폴백을 낳은 적이 있다.
+    private nonisolated static let processTimeout: TimeInterval = 30
 
     private nonisolated static func run(cli: String, args: [String]) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
@@ -326,16 +385,17 @@ final class UsageProvider: ObservableObject {
             return formatter.string(from: date)
         }
 
-        /// 창 길이로 이름을 붙인다. 예전엔 10080분(7일)만 "주간"으로 알아보고 나머지는
-        /// fallback으로 흘려서, Codex의 43200분(30일) 한도가 "세션"으로 표시됐다.
-        /// 창 길이를 아예 안 알려주는 프로바이더(Grok)는 기간을 단정하지 않고 "한도"로 둔다.
+        /// 창 길이를 그대로 이름으로 쓴다 — "세션/주간/루틴" 같은 추상 이름보다
+        /// "5시간/1주일"이 직관적이라는 피드백 반영. 창 길이를 아예 안 알려주는
+        /// 프로바이더(Grok)는 기간을 단정하지 않고 "한도"로 둔다.
         func label(for window: CodexBarEntry.Window) -> String {
             guard let minutes = window.windowMinutes else { return "한도" }
-            switch minutes {
-            case ..<600: return "세션"  // 5~10시간짜리 롤링 윈도우
-            case ..<20160: return "주간"  // 7일
-            default: return "월간"  // 30일 이상
-            }
+            if minutes < 60 { return "\(minutes)분" }
+            if minutes < 1440 { return "\(minutes / 60)시간" }
+            let days = minutes / 1440
+            if days < 7 { return "\(days)일" }
+            if days < 30 { return "\(days / 7)주일" }
+            return "\(days)일"
         }
 
         /// primary/secondary가 제목 붙은 extraRateWindows와 같은 창을 가리키는 경우가 있다
@@ -349,30 +409,24 @@ final class UsageProvider: ObservableObject {
             return abs(x.timeIntervalSince(y)) < 600
         }
 
-        /// 영어로 된 창 제목("Gemini 5-hour")을 다른 카드와 같은 세션/주간 표기로 바꾼다.
-        /// 카드 제목이 이미 "Gemini"라 창 이름에 모델명을 또 붙일 필요가 없다.
-        func shorten(_ title: String) -> String {
-            title
-                .replacingOccurrences(of: "Codex ", with: "")
-                .replacingOccurrences(of: "Gemini ", with: "")
-                .replacingOccurrences(of: "5-hour", with: "세션")
-                .replacingOccurrences(of: "weekly", with: "주간")
-                .replacingOccurrences(of: "Weekly", with: "주간")
-        }
+        /// 창 제목("Gemini 5-hour" 등)은 더 이상 쓰지 않는다 — 길이 라벨이면
+        /// 어떤 프로바이더의 어떤 한도인지 바로 읽힌다.
 
-        // 제목(id)이 붙은 창을 먼저 쓴다. 어떤 한도인지 분명하고 순서도 일정하기 때문이다.
-        // primary/secondary는 그중 일부를 가리키기만 하는데 무엇을 가리킬지가 일정하지
-        // 않다 — Antigravity는 primary가 5시간 창일 때도, 주간 창일 때도 있다.
-        for extra in extras {
+        // 제목 있는 창을 먼저 쓴다. 순서가 일정하고 primary/secondary가 그중 일부를
+        // 가리키는데 무엇을 가리킬지가 일정하지 않다 — Antigravity는 primary가
+        // 5시간 창일 때도, 주간 창일 때도 있다.
+        for (index, extra) in extras.enumerated() {
             windows.append(
                 .init(
-                    label: shorten(extra.title), usedPercent: extra.window.usedPercent,
+                    id: "\(entry.provider)-extra-\(index)",
+                    label: label(for: extra.window), usedPercent: extra.window.usedPercent,
                     resetText: resetText(extra.window)))
         }
-        for extra in sparkExtras {
+        for (index, extra) in sparkExtras.enumerated() {
             sparkWindows.append(
                 .init(
-                    label: shorten(extra.title), usedPercent: extra.window.usedPercent,
+                    id: "\(entry.provider)-spark-\(index)",
+                    label: label(for: extra.window), usedPercent: extra.window.usedPercent,
                     resetText: resetText(extra.window)))
         }
 
@@ -389,6 +443,7 @@ final class UsageProvider: ObservableObject {
             guard let window, !covered(window) else { return }
             windows.append(
                 .init(
+                    id: "\(entry.provider)-\(window.windowMinutes ?? -1)-\(windows.count)",
                     label: label(for: window), usedPercent: window.usedPercent,
                     resetText: resetText(window)))
         }
