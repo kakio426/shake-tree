@@ -28,12 +28,18 @@ final class FloatingPanel: NSPanel {
     }
 
     /// 열려 있는 상태에서 높이만 내용에 맞춘다. 상단(메뉴바)은 고정.
-    func resizeKeepingTop(to height: CGFloat) {
+    func resizeKeepingTop(to requestedHeight: CGFloat) {
+        guard requestedHeight.isFinite, requestedHeight > 0 else { return }
+        let scale = screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        var height = (requestedHeight * scale).rounded(.up) / scale
+        if let visibleHeight = screen?.visibleFrame.height {
+            height = min(height, max(100, visibleHeight - 8))
+        }
         guard abs(frame.height - height) > 0.5 else { return }
         var newFrame = frame
         newFrame.origin.y += newFrame.height - height
         newFrame.size.height = height
-        setFrame(newFrame, display: true)
+        setFrame(newFrame, display: isVisible)
     }
 
     /// 두 패널이 동일한 팝오버 스타일(비활성화 가능 + 테두리 없음 + 그림자)을 쓰도록 공통 조립.
@@ -49,6 +55,8 @@ final class FloatingPanel: NSPanel {
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Swift ARC가 소유권을 관리한다. AppKit의 close 시 자동 release까지 켜면
+        // 컨트롤러/테스트의 강한 참조와 수명이 충돌할 수 있어 명시적으로 끈다.
         panel.isReleasedWhenClosed = false
         panel.contentView = contentView
         return panel

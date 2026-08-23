@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "ShakeTree",
             path: "Sources/ShakeTree"
-        )
+        ),
+        .testTarget(
+            name: "ShakeTreeTests",
+            dependencies: ["ShakeTree"],
+            path: "Tests/ShakeTreeTests"
+        ),
     ]
 )

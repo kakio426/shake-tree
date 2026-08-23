@@ -30,6 +30,10 @@ final class HistoryPanelController {
 
     func show() {
         guard Date().timeIntervalSince(lastAutoClose) > 0.35 else { return }
+        if let panel, panel.isVisible {
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
 
         // 활성화 직전의 앞 앱을 기억 (붙여넣기/포커스 복귀 대상)
         let front = NSWorkspace.shared.frontmostApplication
@@ -37,18 +41,28 @@ final class HistoryPanelController {
             previousApp = front
         }
 
-        let panel = self.panel ?? makePanel()
+        let panel = makePanel()
         self.panel = panel
-        viewModel.reload()
-        viewModel.searchText = ""
-        viewModel.selectedIndex = 0
+        viewModel.prepareForPresentation()
         panel.positionBelow(anchorButton: anchorButton)
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
     }
 
     func close() {
-        panel?.orderOut(nil)
+        guard let panel else { return }
+        if let resignObserver {
+            NotificationCenter.default.removeObserver(resignObserver)
+            self.resignObserver = nil
+        }
+        self.panel = nil
+        panel.orderOut(nil)
+        panel.contentView = nil
+        panel.close()
+        // 이미지 항목은 각각 큰 PNG일 수 있다. 닫힌 히스토리 패널이 목록 전체의 BLOB을
+        // 계속 잡고 있지 않도록 화면용 배열을 비운다. DB 기록에는 영향이 없다.
+        viewModel.unload()
+        previousApp = nil
     }
 
     private func makePanel() -> FloatingPanel {
@@ -97,6 +111,7 @@ final class HistoryViewModel: ObservableObject {
     @Published var selectedIndex: Int = 0
     @Published var searchText: String = "" {
         didSet {
+            guard searchText != oldValue else { return }
             reload()
             selectedIndex = 0
         }
@@ -104,6 +119,20 @@ final class HistoryViewModel: ObservableObject {
 
     var onSelect: ((ClipboardItem) -> Void)?
     var onClose: (() -> Void)?
+
+    func prepareForPresentation() {
+        if searchText.isEmpty {
+            reload()
+        } else {
+            searchText = ""
+        }
+        selectedIndex = 0
+    }
+
+    func unload() {
+        items = []
+        selectedIndex = 0
+    }
 
     func reload() {
         items = ClipboardStore.shared.items(matching: searchText)

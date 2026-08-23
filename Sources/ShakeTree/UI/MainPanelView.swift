@@ -11,19 +11,7 @@ struct MainPanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             section("시스템") {
-                SystemStatusView(
-                    cpuFraction: model.cpuFraction,
-                    cpuHistory: model.cpuHistory,
-                    memHistory: model.memHistory,
-                    memLevel: model.memLevel,
-                    memUsedGB: model.memUsedGB,
-                    memTotalGB: model.memTotalGB,
-                    memCompressedGB: model.memCompressedGB,
-                    swapUsedGB: model.swapUsedGB,
-                    diskFraction: model.diskFraction,
-                    diskUsedGB: model.diskUsedGB,
-                    diskTotalGB: model.diskTotalGB,
-                    diskPurgeableGB: model.diskPurgeableGB)
+                SystemStatusView(snapshot: model.system)
             }
             Divider()
             section("AI 사용량") { usageContent }
@@ -61,11 +49,11 @@ struct MainPanelView: View {
 
     @ViewBuilder
     private var usageContent: some View {
-        if !model.usages.isEmpty {
-            UsageGridView(usages: model.usages)
+        if !model.usage.usages.isEmpty {
+            UsageGridView(usages: model.usage.usages)
         }
         // 데이터 전/후 공통 상태 줄 — "조회 중…" / "업데이트: 오후 3:04" / 실패 안내
-        Text(model.usageStatusText)
+        Text(model.usage.statusText)
             .font(Theme.caption)
             .foregroundStyle(.secondary)
             .lineLimit(1)
@@ -111,7 +99,7 @@ private struct ActionSection: View {
                     Text(model.awakeStateText)
                         .font(Theme.captionStrong)
                         .foregroundStyle(
-                            model.awakeActive ? Color.accentColor : Color.secondary)
+                            model.awake.active ? Color.accentColor : Color.secondary)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.tertiary)
@@ -169,14 +157,14 @@ private struct AwakeDurationGrid: View {
                     model.enableAwake(minutes: options[index].minutes)
                 }
             }
-            chip("끄기", selected: !model.awakeActive) { model.disableAwake() }
+            chip("끄기", selected: !model.awake.active) { model.disableAwake() }
         }
         .padding(.leading, 24)  // 아이콘 열만큼 들여쓰기
         .padding(.vertical, 2)
     }
 
     private func isSelected(_ option: (title: String, minutes: Int?)) -> Bool {
-        option.minutes == nil && model.awakeActive && model.awakeEndsAt == nil
+        option.minutes == nil && model.awake.active && model.awake.endsAt == nil
     }
 
     private func chip(

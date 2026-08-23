@@ -60,11 +60,20 @@ final class UsageProvider: ObservableObject {
     /// 브라우저 상태에 따라 한 번씩 실패할 때가 있다 — 그때마다 카드가 깜빡 사라지면
     /// 산만하므로, 한 번 성공한 값은 다음 성공까지 붙잡아 둔다.
     private var lastGood: [String: ProviderUsage] = [:]
+    private var lastSuccessfulRefresh: Date?
+    private var lastAttempt: Date?
+    private var isRefreshing = false
+    private var refreshTask: Task<Void, Never>?
+    private var hasBeenRequested = false
 
     init() {
         // 앱 재시작 직후에도 마지막 값을 곧바로 보여준다 — 켤 때마다 카드가
         // 싹 사라졌다 채워지는 깜빡임을 막는다.
-        loadLastGoodFromDisk()
+        if let cache = loadLastGoodFromDisk(), !cache.usages.isEmpty {
+            lastSuccessfulRefresh = cache.savedAt
+            usages = Self.sorted(cache.usages)
+            statusText = "이전 업데이트: \(Self.shortTime(cache.savedAt))"
+        }
     }
 
     private var timer: Timer?
@@ -81,28 +90,69 @@ final class UsageProvider: ObservableObject {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    func start(interval: TimeInterval = 300) {
-        refresh()
+    /// 백그라운드 갱신은 15분마다, 패널을 열 때는 5분보다 오래됐으면 즉시 갱신한다.
+    /// 캐시가 있으므로 패널은 기다리지 않고 마지막 성공값을 먼저 보여준다.
+    func start(interval: TimeInterval = 900) {
+        guard timer == nil else { return }
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            MainActor.assumeIsolated {
+                guard let self, self.hasBeenRequested else { return }
+                self.refresh()
+            }
         }
+        timer.tolerance = min(60, interval * 0.1)
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
 
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        refreshTask?.cancel()
+        refreshTask = nil
+        isRefreshing = false
+    }
+
+    func refreshIfStale(maxAge: TimeInterval) {
+        hasBeenRequested = true
+        if let lastSuccessfulRefresh,
+            Date().timeIntervalSince(lastSuccessfulRefresh) < maxAge
+        {
+            return
+        }
+        // 네트워크/로그인이 실패한 상태에서 패널을 여러 번 열어도 프로세스를 연속으로
+        // 생성하지 않는다. 다음 정기 갱신이나 1분 뒤에는 다시 시도할 수 있다.
+        if let lastAttempt, Date().timeIntervalSince(lastAttempt) < 60 { return }
+        refresh()
+    }
+
     func refresh() {
+        guard !isRefreshing else { return }
         guard let cli = Self.cliPath else {
             statusText = "사용량 CLI 없음 (앱 재설치 필요)"
             onUpdate?()
             return
         }
-        Task {
+        isRefreshing = true
+        lastAttempt = Date()
+        refreshTask = Task { [weak self] in
+            guard let self else { return }
             // 프로바이더별로 따로 조회하므로 일부만 실패할 수 있다. 성공한 것만이라도
             // 보여주고, 전부 실패했을 때만 이전 값을 남긴 채 상태 줄로 알린다.
             let entries = await Self.fetch(cli: cli)
+            guard !Task.isCancelled else {
+                self.isRefreshing = false
+                self.refreshTask = nil
+                return
+            }
             let fresh = entries.map(Self.display(from:))
             for usage in fresh { lastGood[usage.provider] = usage }
-            saveLastGoodToDisk()
+
+            let completedAt = Date()
+            if !fresh.isEmpty {
+                lastSuccessfulRefresh = completedAt
+                saveLastGoodToDisk(savedAt: completedAt)
+            }
 
             // 이번 라운드에서 못 받아온 프로바이더는 마지막 성공값으로 메운다 —
             // 일시적 실패(쿠키 읽기 경쟁, 네트워크)로 카드가 깜빡 사라지지 않게.
@@ -111,19 +161,24 @@ final class UsageProvider: ObservableObject {
             where !fresh.contains(where: { $0.provider == provider }) {
                 merged.append(usage)
             }
-            merged.sort {
-                Self.providerOrder.firstIndex(of: $0.provider) ?? .max
-                    < Self.providerOrder.firstIndex(of: $1.provider) ?? .max
-            }
+            merged = Self.sorted(merged)
 
             if merged.isEmpty {
                 self.statusText = "사용량 조회 실패 (로그인 상태 확인)"
+            } else if fresh.isEmpty {
+                self.usages = merged
+                if let lastSuccessfulRefresh {
+                    self.statusText = "이전 업데이트: \(Self.shortTime(lastSuccessfulRefresh))"
+                } else {
+                    self.statusText = "사용량 조회 실패 (이전 값 표시 중)"
+                }
             } else {
                 self.usages = merged
-                let time = Date().formatted(date: .omitted, time: .shortened)
-                self.statusText = "업데이트: \(time)"
+                self.statusText = "업데이트: \(Self.shortTime(completedAt))"
             }
             self.onUpdate?()
+            self.isRefreshing = false
+            self.refreshTask = nil
         }
     }
 
@@ -145,21 +200,33 @@ final class UsageProvider: ObservableObject {
             .appendingPathComponent("usage-cache.json")
     }
 
-    private func loadLastGoodFromDisk() {
+    private func loadLastGoodFromDisk() -> UsageCache? {
         guard let url = cacheURL,
             let data = try? Data(contentsOf: url),
             let cache = try? JSONDecoder().decode(UsageCache.self, from: data)
-        else { return }
+        else { return nil }
         for usage in cache.usages { lastGood[usage.provider] = usage }
+        return cache
     }
 
-    private func saveLastGoodToDisk() {
+    private func saveLastGoodToDisk(savedAt: Date) {
         guard let url = cacheURL else { return }
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let cache = UsageCache(savedAt: Date(), usages: Array(lastGood.values))
+        let cache = UsageCache(savedAt: savedAt, usages: Self.sorted(Array(lastGood.values)))
         guard let data = try? JSONEncoder().encode(cache) else { return }
         try? data.write(to: url, options: .atomic)
+    }
+
+    private nonisolated static func sorted(_ usages: [ProviderUsage]) -> [ProviderUsage] {
+        usages.sorted {
+            providerOrder.firstIndex(of: $0.provider) ?? .max
+                < providerOrder.firstIndex(of: $1.provider) ?? .max
+        }
+    }
+
+    private nonisolated static func shortTime(_ date: Date) -> String {
+        date.formatted(date: .omitted, time: .shortened)
     }
 
     /// 한 번의 호출로 다 가져올 수 없어서 나눠 부른다. 배열 순서 = 우선순위.

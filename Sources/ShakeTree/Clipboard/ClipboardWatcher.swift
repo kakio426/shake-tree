@@ -24,11 +24,18 @@ final class ClipboardWatcher {
     private static let maxImageBytes = 10 * 1024 * 1024
 
     func start() {
+        guard timer == nil else { return }
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.check() }
+            MainActor.assumeIsolated { self?.check() }
         }
+        timer.tolerance = 0.1
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
     }
 
     private func check() {

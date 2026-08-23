@@ -26,18 +26,20 @@ enum ScreenshotMode: String {
 @MainActor
 final class ScreenshotWatcher {
     private var source: DispatchSourceFileSystemObject?
-    private var directoryFD: CInt = -1
     private var knownNames = Set<String>()
     private var watchedDirectory: URL?
 
     func start() {
-        watch(directory: currentDirectory())
+        let directory = currentDirectory()
+        guard source == nil || watchedDirectory != directory else { return }
+        watch(directory: directory)
     }
 
     func stop() {
         source?.cancel()
         source = nil
         watchedDirectory = nil
+        knownNames.removeAll(keepingCapacity: true)
     }
 
     /// 저장 위치를 바꾼 뒤 새 폴더를 감시하도록 다시 건다.
@@ -48,20 +50,18 @@ final class ScreenshotWatcher {
     }
 
     private func watch(directory: URL) {
-        source?.cancel()
-        source = nil
+        stop()
+
+        let fd = open(directory.path, O_EVTONLY)
+        guard fd >= 0 else { return }
 
         watchedDirectory = directory
         knownNames = Set(fileNames(in: directory))
 
-        let fd = open(directory.path, O_EVTONLY)
-        guard fd >= 0 else { return }
-        directoryFD = fd
-
         let newSource = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd, eventMask: .write, queue: .main)
         newSource.setEventHandler { [weak self] in
-            Task { @MainActor in self?.checkForNewFiles() }
+            MainActor.assumeIsolated { self?.checkForNewFiles() }
         }
         newSource.setCancelHandler { close(fd) }
         newSource.resume()

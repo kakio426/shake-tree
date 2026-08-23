@@ -2,12 +2,21 @@ import AppKit
 
 /// 나무를 바람에 흔든다. CPU 사용률이 높을수록 진폭·주파수가 커져
 /// 산들바람(작게 살랑) → 태풍(크게 요동) 으로 변한다.
-/// 프레임을 미리 만들지 않고 매 틱마다 sway 값을 계산해 다시 그린다.
+/// sway 값은 매 틱 계산하되 같은 0.25pt 프레임은 캐시해 메뉴바를 불필요하게 다시
+/// 그리지 않는다.
 @MainActor
 final class TreeAnimator {
+    private struct FrameKey: Hashable {
+        let swayQuarterPoints: Int
+        let awake: Bool
+        let warningLevel: UsageLevel
+    }
+
     private weak var button: NSStatusBarButton?
     private var timer: Timer?
-    private let interval: TimeInterval = 0.07
+    // 10fps면 28pt 메뉴바 아이콘의 움직임은 충분히 부드럽다. CPU에 따른 속도 차이는
+    // phase 증가량으로 유지되므로 프레임 주기를 높이지 않아도 기능 표현은 같다.
+    private let interval: TimeInterval = 0.1
 
     private var phase: CGFloat = 0
     // 목표값 (CPU에 따라 갱신) 과 현재 표시값 (부드럽게 따라감)
@@ -16,14 +25,19 @@ final class TreeAnimator {
     private var amplitude: CGFloat = 1.5
     private var frequency: CGFloat = 2.0
     private var awake = false
-    private var warningColor: NSColor?
+    private var warningLevel: UsageLevel = .normal
+    private var currentSway: CGFloat = 0
+    private var lastFrameKey: FrameKey?
+    private var frameCache: [FrameKey: NSImage] = [:]
+    private var suspended = false
 
     init(button: NSStatusBarButton) {
         self.button = button
         button.image = TreeIcon.image(sway: 0)
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+            MainActor.assumeIsolated { self?.tick() }
         }
+        timer.tolerance = 0.015
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
@@ -39,12 +53,29 @@ final class TreeAnimator {
 
     /// 잠들지 않기 활성 여부 — 아이콘에 표시 점을 붙인다
     func setAwake(_ value: Bool) {
+        guard awake != value else { return }
         awake = value
+        renderCurrentFrame()
     }
 
-    /// nil이면 평소 흑백, 색을 주면 그 색으로 칠한다 — CPU/RAM 경고 시에만 호출할 것.
-    func setWarningColor(_ color: NSColor?) {
-        warningColor = color
+    func setWarningLevel(_ level: UsageLevel) {
+        guard warningLevel != level else { return }
+        warningLevel = level
+        renderCurrentFrame()
+    }
+
+    func setSuspended(_ value: Bool) {
+        guard suspended != value else { return }
+        suspended = value
+        timer?.fireDate = value ? .distantFuture : Date()
+        if !value { tick() }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        frameCache.removeAll()
+        lastFrameKey = nil
     }
 
     private func tick() {
@@ -57,7 +88,33 @@ final class TreeAnimator {
         if phase > .pi * 2 { phase -= .pi * 2 }
 
         // 기본 진동에 약한 2차 하모닉을 더해 덜 기계적인 바람 흔들림
-        let sway = amplitude * (sin(phase) + 0.25 * sin(2.3 * phase))
-        button?.image = TreeIcon.image(sway: sway, awake: awake, tint: warningColor)
+        currentSway = amplitude * (sin(phase) + 0.25 * sin(2.3 * phase))
+        renderCurrentFrame()
+    }
+
+    private func renderCurrentFrame() {
+        guard !suspended else { return }
+
+        // 0.25pt 단위로 양자화하면 28pt 아이콘에서는 차이가 보이지 않으면서 같은 프레임을
+        // 재사용할 수 있다. 같은 키가 연속되면 status item 자체도 다시 그리지 않는다.
+        let swayQuarterPoints = Int((currentSway * 4).rounded())
+        let key = FrameKey(
+            swayQuarterPoints: swayQuarterPoints,
+            awake: awake,
+            warningLevel: warningLevel)
+        guard key != lastFrameKey else { return }
+        lastFrameKey = key
+
+        if let cached = frameCache[key] {
+            button?.image = cached
+            return
+        }
+
+        let image = TreeIcon.image(
+            sway: CGFloat(swayQuarterPoints) / 4,
+            awake: awake,
+            tint: Theme.warningColor(for: warningLevel))
+        frameCache[key] = image
+        button?.image = image
     }
 }

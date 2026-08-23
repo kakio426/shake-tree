@@ -10,6 +10,7 @@ final class MemoryPressureMonitor {
     private var source: DispatchSourceMemoryPressure?
 
     func start() {
+        guard source == nil else { return }
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical, .normal], queue: .main)
         source.setEventHandler { [weak self, weak source] in
@@ -18,6 +19,11 @@ final class MemoryPressureMonitor {
         }
         source.activate()
         self.source = source
+    }
+
+    func stop() {
+        source?.cancel()
+        source = nil
     }
 
     private static func level(from data: DispatchSource.MemoryPressureEvent) -> UsageLevel {

@@ -6,45 +6,38 @@ import SwiftUI
 /// 상시 색상 게이지와 구분된다.
 /// (RAM/디스크는 평소에도 높게 유지되는 게 정상이라 CPU보다 높은 경고 기준선을 쓴다.)
 struct SystemStatusView: View {
-    let cpuFraction: Double  // 0...1
-    let cpuHistory: [Double]
-    let memHistory: [Double]
-    let memLevel: UsageLevel  // 사용량 %가 아니라 커널의 실제 메모리 압박 신호
-    let memUsedGB: Double
-    let memTotalGB: Double
-    let memCompressedGB: Double
-    let swapUsedGB: Double
-    let diskFraction: Double
-    let diskUsedGB: Double
-    let diskTotalGB: Double
-    let diskPurgeableGB: Double
+    let snapshot: SystemSnapshot
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.rowSpacing) {
             graphRow(
-                icon: "cpu", label: "CPU", history: cpuHistory, color: .primary,
-                detail: Theme.percentText(cpuFraction), detailColor: .primary)
+                icon: "cpu", label: "CPU", history: snapshot.cpuHistory, color: .primary,
+                detail: Theme.percentText(snapshot.cpuFraction), detailColor: .primary)
             // RAM은 두 줄: 사용량 그래프 + 압축/스왑 보조 줄. 램이 꽉 찬 맥에서는
             // 사용량 GB가 천장에 붙어 거의 안 움직이는 게 정상이라, 실제로 상태를
             // 알려주는 압축·스왑을 바로 아래 붙여둔다.
             VStack(alignment: .leading, spacing: 1) {
                 graphRow(
-                    icon: "memorychip", label: "RAM", history: memHistory, color: ramColor,
-                    detail: gbText(memUsedGB, memTotalGB), detailColor: ramColor)
+                    icon: "memorychip", label: "RAM", history: snapshot.memHistory,
+                    color: ramColor,
+                    detail: gbText(snapshot.memUsedGB, snapshot.memTotalGB), detailColor: ramColor)
                 memoryDetailRow()
             }
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 10) {
                     rowLabel(icon: "internaldrive", text: "저장")
-                    segmentedMeter(fraction: diskFraction, extraFraction: purgeableFraction)
+                    segmentedMeter(
+                        fraction: snapshot.diskFraction, extraFraction: purgeableFraction)
                         .frame(height: 6)
                         .frame(height: 22)
-                    detailText(gbText(diskUsedGB, diskTotalGB), color: diskColor)
+                    detailText(
+                        gbText(snapshot.diskUsedGB, snapshot.diskTotalGB), color: diskColor)
                 }
-                if diskPurgeableGB >= 1 {
+                if snapshot.diskPurgeableGB >= 1 {
                     HStack(spacing: 10) {
                         Color.clear.frame(width: Theme.labelWidth, height: 0)
-                        Text("정리 가능 \(String(format: "%.1f", diskPurgeableGB))GB")
+                        Text(
+                            "정리 가능 \(String(format: "%.1f", snapshot.diskPurgeableGB))GB")
                             .font(Theme.subnumber)
                             .foregroundStyle(.secondary)
                         Spacer(minLength: 0)
@@ -55,8 +48,10 @@ struct SystemStatusView: View {
     }
 
     private var purgeableFraction: Double {
-        guard diskTotalGB > 0 else { return 0 }
-        return min(max(diskPurgeableGB / diskTotalGB, 0), 1 - diskFraction)
+        guard snapshot.diskTotalGB > 0 else { return 0 }
+        return min(
+            max(snapshot.diskPurgeableGB / snapshot.diskTotalGB, 0),
+            1 - snapshot.diskFraction)
     }
 
     /// 총량이 작을수록(=RAM) 소수 한 자리까지 — 17GB짜리를 정수로 반올림하면
@@ -68,14 +63,18 @@ struct SystemStatusView: View {
             : String(format: "%.0f/%.0fGB", used, total)
     }
 
-    private var ramColor: Color { Theme.color(for: memLevel) }
-    private var diskColor: Color { Theme.color(for: SystemThresholds.diskLevel(diskFraction)) }
+    private var ramColor: Color { Theme.color(for: snapshot.memLevel) }
+    private var diskColor: Color {
+        Theme.color(for: SystemThresholds.diskLevel(snapshot.diskFraction))
+    }
 
     /// 압축 메모리는 항상, 스왑은 실제로 쓰이고 있을 때만 표시 —
     /// 스왑 0인 건 건강한 상태라 굳이 자리를 차지할 이유가 없다.
     private var memoryDetailText: String {
-        var parts = [String(format: "압축 %.1fGB", memCompressedGB)]
-        if swapUsedGB >= 0.05 { parts.append(String(format: "스왑 %.1fGB", swapUsedGB)) }
+        var parts = [String(format: "압축 %.1fGB", snapshot.memCompressedGB)]
+        if snapshot.swapUsedGB >= 0.05 {
+            parts.append(String(format: "스왑 %.1fGB", snapshot.swapUsedGB))
+        }
         return parts.joined(separator: "  ·  ")
     }
 
@@ -84,7 +83,7 @@ struct SystemStatusView: View {
             Color.clear.frame(width: Theme.labelWidth, height: 0)  // 위 행 라벨 폭만큼 들여쓰기
             Text(memoryDetailText)
                 .font(Theme.subnumber)
-                .foregroundStyle(memLevel == .normal ? Color.secondary : ramColor)
+                .foregroundStyle(snapshot.memLevel == .normal ? Color.secondary : ramColor)
             Spacer(minLength: 0)
         }
     }

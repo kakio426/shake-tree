@@ -7,27 +7,25 @@ import SwiftUI
 /// 처리가 모두 여기로 모였다.
 @MainActor
 final class AppModel: ObservableObject {
-    // 시스템 현황 (0.5초마다 AppDelegate가 밀어 넣는다)
-    @Published var cpuFraction = 0.0
-    @Published var cpuHistory: [Double] = []
-    @Published var memHistory: [Double] = []
-    @Published var memLevel: UsageLevel = .normal
-    @Published var memUsedGB = 0.0
-    @Published var memTotalGB = 0.0
-    @Published var memCompressedGB = 0.0
-    @Published var swapUsedGB = 0.0
-    @Published var diskFraction = 0.0
-    @Published var diskUsedGB = 0.0
-    @Published var diskTotalGB = 0.0
-    @Published var diskPurgeableGB = 0.0
+    struct UsageState {
+        var usages: [ProviderUsage] = []
+        var statusText = ""
+    }
 
-    // AI 사용량 (5분마다 UsageProvider가 갱신)
-    @Published var usages: [ProviderUsage] = []
-    @Published var usageStatusText = ""
+    struct AwakeState: Equatable {
+        var active = false
+        var endsAt: Date?
+    }
+
+    // 자주 바뀌는 값은 섹션별 스냅샷 하나로 발행한다. 개별 @Published 12개를 연달아
+    // 바꾸면 같은 화면이 한 샘플마다 여러 번 다시 배치된다.
+    @Published private(set) var system = SystemSnapshot.empty
+
+    // AI 사용량 (캐시를 즉시 표시하고, 패널 열기/저주기 백그라운드에서 갱신)
+    @Published private(set) var usage = UsageState()
 
     // 잠들지 않기 — KeepAwake.onChange에서만 바뀐다 (private(set))
-    @Published private(set) var awakeActive = false
-    @Published private(set) var awakeEndsAt: Date?
+    @Published private(set) var awake = AwakeState()
 
     // 스크린샷 / 설정
     @Published var screenshotMode: ScreenshotMode = .current
@@ -44,9 +42,18 @@ final class AppModel: ObservableObject {
         self.keepAwake = keepAwake
     }
 
+    func updateSystem(_ snapshot: SystemSnapshot) {
+        guard snapshot != system else { return }
+        system = snapshot
+    }
+
+    func updateUsage(_ usages: [ProviderUsage], statusText: String) {
+        usage = UsageState(usages: usages, statusText: statusText)
+    }
+
     func syncAwake(from service: KeepAwake) {
-        awakeActive = service.isActive
-        awakeEndsAt = service.endsAt
+        let next = AwakeState(active: service.isActive, endsAt: service.endsAt)
+        if next != awake { awake = next }
     }
 
     /// 토글 우클릭과 같은 의미의 빠른 on/off도 칩으로 통해서만 — nil이면 무기한.
@@ -60,8 +67,8 @@ final class AppModel: ObservableObject {
 
     /// 상태 줄 문구: 꺼짐 / 무기한 / HH:mm까지
     var awakeStateText: String {
-        guard awakeActive else { return "꺼짐" }
-        return awakeEndsAt.map { "\(Theme.clockText($0))까지" } ?? "무기한"
+        guard awake.active else { return "꺼짐" }
+        return awake.endsAt.map { "\(Theme.clockText($0))까지" } ?? "무기한"
     }
 
     func setScreenshotMode(_ mode: ScreenshotMode) {
@@ -132,21 +139,26 @@ final class MainPanelController {
     weak var anchorButton: NSStatusBarButton?
 
     private var panel: FloatingPanel?
-    /// 패널이 만들어질 때 등록한 관찰자·모니터 해제 클로저 (deinit은 nonisolated라
-    /// 프로퍼티를 직접 건드릴 수 없으므로 조립 시점에 묶어 둔다).
-    private nonisolated(unsafe) var cleanup: (() -> Void)?
+    private var pendingHeight: CGFloat?
+    private var resizeScheduled = false
+    private var panelGeneration = 0
+    /// 패널이 만들어질 때 등록한 관찰자·모니터 해제 클로저. close()와 앱 종료 경로가
+    /// 모두 이 클로저를 실행하므로 actor 격리를 우회하는 deinit 정리가 필요 없다.
+    private var cleanup: (() -> Void)?
     /// 포커스 이동으로 자동 닫힌 직후의 시각 — 아이콘 재클릭으로 닫을 때
     /// "닫힘→재오픈"이 겹쳐 절대 닫히지 않는 버그를 막는 유예 창.
     private var lastAutoClose = Date.distantPast
 
+    /// AppDelegate가 화면용 발행과 느린 조회를 패널이 보일 때만 수행하도록 알려준다.
+    var onVisibilityChange: ((Bool) -> Void)?
+
     private let model: AppModel
+
+    /// 수명주기 진단과 회귀 테스트용. 닫힌 뒤 false여야 숨은 SwiftUI 트리가 없다.
+    var hasLoadedPanel: Bool { panel != nil }
 
     init(model: AppModel) {
         self.model = model
-    }
-
-    deinit {
-        cleanup?()
     }
 
     func toggle() {
@@ -159,7 +171,14 @@ final class MainPanelController {
 
     func show() {
         guard Date().timeIntervalSince(lastAutoClose) > 0.35 else { return }
-        let panel = self.panel ?? makePanel()
+        if let panel, panel.isVisible {
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        onVisibilityChange?(true)
+        panelGeneration &+= 1
+        let panel = makePanel()
         self.panel = panel
 
         // 내용 크기에 맞춰 세운 뒤 메뉴바 아래에 붙인다 (세부 보정은 레이아웃 직후 콜백)
@@ -173,7 +192,20 @@ final class MainPanelController {
     }
 
     func close() {
-        panel?.orderOut(nil)
+        guard let panel else { return }
+
+        // orderOut만 하면 NSHostingView와 모든 관찰이 살아 있어, 숨은 패널이 시스템
+        // 샘플마다 계속 레이아웃된다. 관찰자부터 끊고 콘텐츠를 실제로 해제한다.
+        cleanup?()
+        cleanup = nil
+        self.panel = nil
+        panelGeneration &+= 1
+        pendingHeight = nil
+        resizeScheduled = false
+        panel.orderOut(nil)
+        panel.contentView = nil
+        panel.close()
+        onVisibilityChange?(false)
     }
 
     private func makePanel() -> FloatingPanel {
@@ -182,7 +214,7 @@ final class MainPanelController {
                 model: model,
                 onClose: { [weak self] in self?.close() },
                 onHeightChange: { [weak self] height in
-                    self?.panel?.resizeKeepingTop(to: height)
+                    self?.scheduleResize(to: height)
                 }))
         let panel = FloatingPanel.makePopover(contentView: host, width: Theme.panelWidth)
 
@@ -216,5 +248,27 @@ final class MainPanelController {
         }
 
         return panel
+    }
+
+    /// GeometryReader 콜백 안에서 곧바로 창 프레임을 바꾸면 새 레이아웃이 다시 같은
+    /// 콜백을 부르는 순환이 생길 수 있다. 한 런루프에 한 번으로 합쳐 다음 턴에 적용한다.
+    private func scheduleResize(to height: CGFloat) {
+        guard height.isFinite, height > 0 else { return }
+        pendingHeight = height.rounded(.up)
+        guard !resizeScheduled else { return }
+        resizeScheduled = true
+        let generation = panelGeneration
+
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard self.panelGeneration == generation else { return }
+                self.resizeScheduled = false
+                guard let height = self.pendingHeight else { return }
+                self.pendingHeight = nil
+                guard let panel = self.panel, panel.isVisible else { return }
+                panel.resizeKeepingTop(to: height)
+            }
+        }
     }
 }

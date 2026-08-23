@@ -3,7 +3,7 @@
 /// RAM은 사용량 %가 항상 90~100%를 유지하는 게 정상(macOS가 유휴 메모리를 파일 캐시로
 /// 적극 씀)이라 % 기준 경고가 무의미해서, 대신 MemoryPressureMonitor의 커널 압박 신호를
 /// 그대로 쓴다.
-enum UsageLevel: Sendable {
+enum UsageLevel: Hashable, Sendable {
     case normal
     case warning
     case critical
