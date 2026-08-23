@@ -161,5 +161,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.diskFraction = disk.usedFraction
         model.diskUsedGB = disk.usedGB
         model.diskTotalGB = disk.totalGB
+        model.diskPurgeableGB = disk.purgeableGB
     }
 }

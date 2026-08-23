@@ -19,6 +19,7 @@ final class AppModel: ObservableObject {
     @Published var diskFraction = 0.0
     @Published var diskUsedGB = 0.0
     @Published var diskTotalGB = 0.0
+    @Published var diskPurgeableGB = 0.0
 
     // AI 사용량 (5분마다 UsageProvider가 갱신)
     @Published var usages: [ProviderUsage] = []

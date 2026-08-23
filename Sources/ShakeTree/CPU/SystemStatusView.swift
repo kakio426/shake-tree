@@ -17,6 +17,7 @@ struct SystemStatusView: View {
     let diskFraction: Double
     let diskUsedGB: Double
     let diskTotalGB: Double
+    let diskPurgeableGB: Double
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.rowSpacing) {
@@ -32,10 +33,30 @@ struct SystemStatusView: View {
                     detail: gbText(memUsedGB, memTotalGB), detailColor: ramColor)
                 memoryDetailRow()
             }
-            meterRow(
-                icon: "internaldrive", label: "저장", fraction: diskFraction, color: diskColor,
-                detail: gbText(diskUsedGB, diskTotalGB))
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 10) {
+                    rowLabel(icon: "internaldrive", text: "저장")
+                    segmentedMeter(fraction: diskFraction, extraFraction: purgeableFraction)
+                        .frame(height: 6)
+                        .frame(height: 22)
+                    detailText(gbText(diskUsedGB, diskTotalGB), color: diskColor)
+                }
+                if diskPurgeableGB >= 1 {
+                    HStack(spacing: 10) {
+                        Color.clear.frame(width: Theme.labelWidth, height: 0)
+                        Text("정리 가능 \(String(format: "%.1f", diskPurgeableGB))GB")
+                            .font(Theme.subnumber)
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
         }
+    }
+
+    private var purgeableFraction: Double {
+        guard diskTotalGB > 0 else { return 0 }
+        return min(max(diskPurgeableGB / diskTotalGB, 0), 1 - diskFraction)
     }
 
     /// 총량이 작을수록(=RAM) 소수 한 자리까지 — 17GB짜리를 정수로 반올림하면
@@ -81,15 +102,23 @@ struct SystemStatusView: View {
         }
     }
 
-    // 디스크: 얼마나 찼는지 채움 막대
-    private func meterRow(
-        icon: String, label: String, fraction: Double, color: Color, detail: String
-    ) -> some View {
-        HStack(spacing: 10) {
-            rowLabel(icon: icon, text: label)
-            ThinProgressBar(value: fraction, color: color, height: 6)
-                .frame(height: 22)
-            detailText(detail, color: color)
+    // 디스크: 실사용(상태 색) + 정리 가능 영역(옅은 회색)을 한 트랙에 두 색으로.
+    // raw 사용량이 왜 Finder보다 크게 보이는지 게이지에서 바로 설명되게 한다.
+    private func segmentedMeter(fraction: Double, extraFraction: Double) -> some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.25))
+                HStack(spacing: 2) {
+                    Capsule()
+                        .fill(diskColor)
+                        .frame(width: proxy.size.width * min(max(fraction, 0), 1))
+                    if extraFraction > 0.004 {
+                        Capsule()
+                            .fill(Color.primary.opacity(0.3))
+                            .frame(width: proxy.size.width * extraFraction)
+                    }
+                }
+            }
         }
     }
 

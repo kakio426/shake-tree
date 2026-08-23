@@ -22,7 +22,8 @@ struct MainPanelView: View {
                     swapUsedGB: model.swapUsedGB,
                     diskFraction: model.diskFraction,
                     diskUsedGB: model.diskUsedGB,
-                    diskTotalGB: model.diskTotalGB)
+                    diskTotalGB: model.diskTotalGB,
+                    diskPurgeableGB: model.diskPurgeableGB)
             }
             Divider()
             section("AI 사용량") { usageContent }
