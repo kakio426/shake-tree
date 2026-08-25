@@ -24,7 +24,11 @@ final class KeepAwake {
             kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn),
             reason, &id)
-        guard result == kIOReturnSuccess else { return }
+        guard result == kIOReturnSuccess else {
+            // 기존 assertion은 위에서 이미 해제됐으므로 실패 상태도 UI에 즉시 알린다.
+            onChange?()
+            return
+        }
 
         assertionID = id
         isActive = true
@@ -32,10 +36,9 @@ final class KeepAwake {
         if let duration {
             endsAt = Date().addingTimeInterval(duration)
             let timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
-                Task { @MainActor in
-                    self?.disable()
-                }
+                MainActor.assumeIsolated { self?.disable() }
             }
+            timer.tolerance = min(1, duration * 0.01)
             RunLoop.main.add(timer, forMode: .common)
             self.timer = timer
         } else {

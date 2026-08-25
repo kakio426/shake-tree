@@ -4,6 +4,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 CONFIG="${1:-release}"
+VERSION="${SHAKETREE_VERSION:-0.2.1}"
+BUILD_NUMBER="${SHAKETREE_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
+GIT_REVISION="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+if [[ -n "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
+    GIT_REVISION="${GIT_REVISION}-dirty"
+fi
+BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 swift build -c "$CONFIG"
 
@@ -29,7 +36,7 @@ else
     echo "warning: Resources/AppIcon.icns 없음 — scripts/build-icon.sh 먼저 실행하세요"
 fi
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -39,8 +46,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key><string>Shake Tree</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+    <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
+    <key>ShakeTreeGitRevision</key><string>${GIT_REVISION}</string>
+    <key>ShakeTreeBuildDate</key><string>${BUILD_DATE}</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
@@ -55,4 +64,4 @@ PLIST
 codesign --force --sign - "$APP/Contents/MacOS/ShakeTree"
 codesign --force --sign - "$APP"
 
-echo "built $APP"
+echo "built $APP — version ${VERSION} (${BUILD_NUMBER}), revision ${GIT_REVISION}"

@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let diskSampleInterval: TimeInterval = 60
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        logBuildIdentity()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = statusItem.button else { return }
         animator = TreeAnimator(button: button)
@@ -83,7 +84,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = cpuMonitor.sample()  // 첫 샘플은 델타 기준점만 잡음
         // 0.5초마다 샘플링 — 나무 흔들림이 CPU 변화를 촘촘하고 민감하게 따라가도록.
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshSystemStats() }
+            MainActor.assumeIsolated {
+                self?.refreshSystemStats()
+                self?.clipboardWatcher.poll()
+            }
         }
         // CPU/클립보드처럼 비슷한 주기의 타이머가 한꺼번에 깨어날 수 있게 여유를 준다.
         timer.tolerance = 0.08
@@ -279,5 +283,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateAnimationSuspension() {
         animator?.setSuspended(screenSleeping || sessionInactive)
+    }
+
+    private func logBuildIdentity() {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "development"
+        let build = info?["CFBundleVersion"] as? String ?? "unknown"
+        let revision = info?["ShakeTreeGitRevision"] as? String ?? "unknown"
+        NSLog("ShakeTree 시작: version=\(version) build=\(build) revision=\(revision)")
     }
 }

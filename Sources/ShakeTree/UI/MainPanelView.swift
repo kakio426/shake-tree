@@ -23,6 +23,9 @@ struct MainPanelView: View {
             footer
         }
         .frame(width: Theme.panelWidth)
+        // 부모 창 높이가 콘텐츠 측정값을 다시 바꾸지 않도록 세로 크기는 intrinsic size로
+        // 고정한다. AppKit 패널 리사이즈와 SwiftUI 측정 사이의 피드백 가능성을 줄인다.
+        .fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.cornerRadius))
         .overlay(
             RoundedRectangle(cornerRadius: Theme.cornerRadius)
@@ -62,7 +65,7 @@ struct MainPanelView: View {
 
     private var footer: some View {
         HStack {
-            Text("Shake Tree")
+            Text(Self.versionText)
                 .font(Theme.micro)
                 .foregroundStyle(.tertiary)
             Spacer(minLength: 8)
@@ -79,6 +82,14 @@ struct MainPanelView: View {
         .padding(.horizontal, Theme.horizontalPadding)
         .padding(.vertical, 7)
     }
+
+    private static let versionText: String = {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String
+        let build = info?["CFBundleVersion"] as? String
+        guard let version, let build else { return "Shake Tree" }
+        return "Shake Tree \(version) (\(build))"
+    }()
 }
 
 // MARK: - 동작 섹션

@@ -111,7 +111,7 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "비우기")
         alert.addButton(withTitle: "취소")
         if runModal(alert) == .alertFirstButtonReturn {
-            ClipboardStore.shared.deleteAllUnpinned()
+            Task { await ClipboardStore.shared.deleteAllUnpinned() }
         }
     }
 
@@ -131,6 +131,54 @@ final class AppModel: ObservableObject {
     }
 }
 
+/// SwiftUI가 보고한 콘텐츠 높이와 AppKit 창 높이가 서로 영향을 주며 A→B→A→B로
+/// 왕복하는 경우를 감지한다. 보통은 요청값을 그대로 통과시키고, 2주기 진동이 확인된
+/// 경우에만 큰 높이에 고정한다. 이후 완전히 다른 콘텐츠 높이가 오면 자동으로 해제된다.
+struct PanelHeightConvergence {
+    private static let epsilon: CGFloat = 0.5
+
+    private var recentHeights: [CGFloat] = []
+    private(set) var suppressedRange: ClosedRange<CGFloat>?
+
+    mutating func reset() {
+        recentHeights.removeAll(keepingCapacity: true)
+        suppressedRange = nil
+    }
+
+    mutating func resolve(_ requestedHeight: CGFloat) -> CGFloat? {
+        guard requestedHeight.isFinite, requestedHeight > 0 else { return nil }
+
+        if let range = suppressedRange {
+            let lower = range.lowerBound - Self.epsilon
+            let upper = range.upperBound + Self.epsilon
+            if (lower...upper).contains(requestedHeight) { return nil }
+
+            // 설정 펼침/사용량 카드 도착처럼 실제 콘텐츠가 달라진 경우에는 다시 추적한다.
+            reset()
+        }
+
+        recentHeights.append(requestedHeight)
+        if recentHeights.count > 4 { recentHeights.removeFirst(recentHeights.count - 4) }
+
+        guard recentHeights.count == 4 else { return requestedHeight }
+        let a1 = recentHeights[0]
+        let b1 = recentHeights[1]
+        let a2 = recentHeights[2]
+        let b2 = recentHeights[3]
+        let isTwoCycle =
+            abs(a1 - a2) <= Self.epsilon
+            && abs(b1 - b2) <= Self.epsilon
+            && abs(a1 - b1) > Self.epsilon
+        guard isTwoCycle else { return requestedHeight }
+
+        let lower = min(a1, b1)
+        let upper = max(a1, b1)
+        suppressedRange = lower...upper
+        recentHeights.removeAll(keepingCapacity: true)
+        return upper
+    }
+}
+
 /// 메인 드롭다운 패널 컨트롤러 — 종전의 NSMenu를 대체한다.
 /// 좌클릭=열기/닫기, 포커스를 잃으면 닫힌다(메뉴처럼). esc 닫기도 지원.
 @MainActor
@@ -142,6 +190,7 @@ final class MainPanelController {
     private var pendingHeight: CGFloat?
     private var resizeScheduled = false
     private var panelGeneration = 0
+    private var heightConvergence = PanelHeightConvergence()
     /// 패널이 만들어질 때 등록한 관찰자·모니터 해제 클로저. close()와 앱 종료 경로가
     /// 모두 이 클로저를 실행하므로 actor 격리를 우회하는 deinit 정리가 필요 없다.
     private var cleanup: (() -> Void)?
@@ -156,6 +205,8 @@ final class MainPanelController {
 
     /// 수명주기 진단과 회귀 테스트용. 닫힌 뒤 false여야 숨은 SwiftUI 트리가 없다.
     var hasLoadedPanel: Bool { panel != nil }
+    /// 강한 참조를 만들지 않고 실제 NSHostingView 해제를 검증하기 위한 진단 포인터.
+    private(set) weak var hostedViewForDiagnostics: NSView?
 
     init(model: AppModel) {
         self.model = model
@@ -178,11 +229,12 @@ final class MainPanelController {
 
         onVisibilityChange?(true)
         panelGeneration &+= 1
+        heightConvergence.reset()
         let panel = makePanel()
         self.panel = panel
 
         // 내용 크기에 맞춰 세운 뒤 메뉴바 아래에 붙인다 (세부 보정은 레이아웃 직후 콜백)
-        if let host = panel.contentView as? NSHostingView<MainPanelView> {
+        if let host = panel.contentView as? NSHostingView<AnyView> {
             let size = host.fittingSize
             panel.setContentSize(
                 NSSize(width: Theme.panelWidth, height: max(size.height, 100)))
@@ -202,6 +254,12 @@ final class MainPanelController {
         panelGeneration &+= 1
         pendingHeight = nil
         resizeScheduled = false
+        heightConvergence.reset()
+        if let host = panel.contentView as? NSHostingView<AnyView> {
+            // ObservableObject 구독 그래프를 먼저 빈 뷰로 교체한다. contentView만 nil로
+            // 만들면 SwiftUI/Combine 내부 구독이 호스팅 뷰를 계속 붙잡을 수 있다.
+            host.rootView = AnyView(EmptyView())
+        }
         panel.orderOut(nil)
         panel.contentView = nil
         panel.close()
@@ -210,12 +268,14 @@ final class MainPanelController {
 
     private func makePanel() -> FloatingPanel {
         let host = NSHostingView(
-            rootView: MainPanelView(
+            rootView: AnyView(
+                MainPanelView(
                 model: model,
                 onClose: { [weak self] in self?.close() },
                 onHeightChange: { [weak self] height in
                     self?.scheduleResize(to: height)
-                }))
+                })))
+        hostedViewForDiagnostics = host
         let panel = FloatingPanel.makePopover(contentView: host, width: Theme.panelWidth)
 
         // 바깥을 클릭해 포커스를 잃으면 닫힌다 (메뉴처럼)
@@ -267,7 +327,8 @@ final class MainPanelController {
                 guard let height = self.pendingHeight else { return }
                 self.pendingHeight = nil
                 guard let panel = self.panel, panel.isVisible else { return }
-                panel.resizeKeepingTop(to: height)
+                guard let resolvedHeight = self.heightConvergence.resolve(height) else { return }
+                panel.resizeKeepingTop(to: resolvedHeight)
             }
         }
     }

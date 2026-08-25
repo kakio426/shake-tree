@@ -1,120 +1,267 @@
 import AppKit
+import QuartzCore
 
-/// 나무를 바람에 흔든다. CPU 사용률이 높을수록 진폭·주파수가 커져
-/// 산들바람(작게 살랑) → 태풍(크게 요동) 으로 변한다.
-/// sway 값은 매 틱 계산하되 같은 0.25pt 프레임은 캐시해 메뉴바를 불필요하게 다시
-/// 그리지 않는다.
+/// 메뉴바 버튼의 클릭 영역과 분리된 아이콘 전용 뷰. 레이어 애니메이션은
+/// WindowServer가 처리하므로 앱 메인 스레드를 프레임마다 깨우지 않는다.
+@MainActor
+private final class TreeAnimationView: NSView {
+    var onAppearanceChange: (() -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
+    }
+}
+
+/// CPU 사용률에 따라 흔들림의 진폭·속도를 바꾸는 메뉴바 나무 아이콘.
+///
+/// 종전 구현은 Timer에서 `NSStatusBarButton.image`를 10Hz로 교체해 버튼 셀과 메뉴바
+/// 전체를 계속 다시 그렸다. 나무를 줄기·수관·상태점 레이어로 나누고 숫자 transform만
+/// Core Animation에 넘겨, CPU 구간이나 색이 바뀔 때만 앱 코드가 실행되게 한다.
 @MainActor
 final class TreeAnimator {
-    private struct FrameKey: Hashable {
-        let swayQuarterPoints: Int
-        let awake: Bool
-        let warningLevel: UsageLevel
-    }
-
-    private weak var button: NSStatusBarButton?
-    private var timer: Timer?
-    // 10fps면 28pt 메뉴바 아이콘의 움직임은 충분히 부드럽다. CPU에 따른 속도 차이는
-    // phase 증가량으로 유지되므로 프레임 주기를 높이지 않아도 기능 표현은 같다.
-    private let interval: TimeInterval = 0.1
-
-    private var phase: CGFloat = 0
-    // 목표값 (CPU에 따라 갱신) 과 현재 표시값 (부드럽게 따라감)
-    private var targetAmplitude: CGFloat = 1.5
-    private var targetFrequency: CGFloat = 2.0
-    private var amplitude: CGFloat = 1.5
-    private var frequency: CGFloat = 2.0
+    private let iconView: TreeAnimationView
+    private let trunkLayer = CAShapeLayer()
+    private let canopyLayer = CAShapeLayer()
+    private let awakeBadgeLayer = CAShapeLayer()
+    private var cpuBucket = 0
     private var awake = false
     private var warningLevel: UsageLevel = .normal
-    private var currentSway: CGFloat = 0
-    private var lastFrameKey: FrameKey?
-    private var frameCache: [FrameKey: NSImage] = [:]
     private var suspended = false
+    private var stopped = false
+
+    private static let bucketCount = 10
+    private static let sampleCount = 24
+    private static let trunkAnimationKey = "ShakeTree.trunk-sway"
+    private static let canopyAnimationKey = "ShakeTree.canopy-sway"
+    private static let baseX: CGFloat = 14
+    private static let baseY: CGFloat = 1.5
+    private static let trunkTopY: CGFloat = 10
 
     init(button: NSStatusBarButton) {
-        self.button = button
-        button.image = TreeIcon.image(sway: 0)
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
-        }
-        timer.tolerance = 0.015
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
+        // 투명 이미지는 status item의 폭만 잡는다. 실제 나무는 독립 레이어가 그린다.
+        let placeholder = NSImage(size: TreeIcon.canvas)
+        placeholder.isTemplate = true
+        button.image = placeholder
+        button.imagePosition = .imageOnly
+
+        let iconView = TreeAnimationView(frame: NSRect(origin: .zero, size: TreeIcon.canvas))
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.wantsLayer = true
+        self.iconView = iconView
+
+        button.addSubview(iconView)
+        NSLayoutConstraint.activate([
+            iconView.widthAnchor.constraint(equalToConstant: TreeIcon.canvas.width),
+            iconView.heightAnchor.constraint(equalToConstant: TreeIcon.canvas.height),
+            iconView.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+        ])
+
+        configureLayers()
+        iconView.onAppearanceChange = { [weak self] in self?.applyState() }
+        applyState()
     }
 
     func update(cpuUsage: Double) {
-        let c = min(max(cpuUsage, 0), 1)
-        // CPU는 대부분 낮은~중간 구간(0~40%)에 머물기 때문에, 선형 대신 제곱근 곡선을
-        // 써서 그 구간에서도 흔들림 변화가 뚜렷이 느껴지게 한다. 최댓값은 그대로 유지.
-        let curved = sqrt(c)
-        targetAmplitude = 1.0 + 5.5 * curved  // 1.0 ~ 6.5 pt
-        targetFrequency = 1.8 + 8.2 * curved  // 1.8 ~ 10 rad/s
+        let clamped = min(max(cpuUsage, 0), 1)
+        let rawBucket = sqrt(clamped) * Double(Self.bucketCount)
+        let nextBucket = min(max(Int(rawBucket.rounded()), 0), Self.bucketCount)
+        guard nextBucket != cpuBucket else { return }
+
+        // 경계 근처의 작은 샘플 노이즈가 0.5초마다 애니메이션을 재시작하지 않게 한다.
+        guard abs(rawBucket - Double(cpuBucket)) >= 0.75 else { return }
+        cpuBucket = nextBucket
+        applyState()
     }
 
-    /// 잠들지 않기 활성 여부 — 아이콘에 표시 점을 붙인다
+    /// 잠들지 않기 활성 여부 — 아이콘 오른쪽 아래 표시 점.
     func setAwake(_ value: Bool) {
         guard awake != value else { return }
         awake = value
-        renderCurrentFrame()
+        applyState()
     }
 
     func setWarningLevel(_ level: UsageLevel) {
         guard warningLevel != level else { return }
         warningLevel = level
-        renderCurrentFrame()
+        applyState()
     }
 
     func setSuspended(_ value: Bool) {
-        guard suspended != value else { return }
+        guard suspended != value, !stopped else { return }
         suspended = value
-        timer?.fireDate = value ? .distantFuture : Date()
-        if !value { tick() }
+        value ? removeAnimationsAndReset() : installCurrentAnimation()
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
-        frameCache.removeAll()
-        lastFrameKey = nil
+        guard !stopped else { return }
+        stopped = true
+        removeAnimationsAndReset()
+        iconView.removeFromSuperview()
     }
 
-    private func tick() {
-        // 목표값으로 보간하되, CPU 샘플링이 0.5초마다 갱신되므로 그 안에서
-        // 충분히 따라잡을 수 있도록 이전보다 반응성을 높였다 (0.08 → 0.12).
-        amplitude += (targetAmplitude - amplitude) * 0.12
-        frequency += (targetFrequency - frequency) * 0.12
-
-        phase += frequency * CGFloat(interval)
-        if phase > .pi * 2 { phase -= .pi * 2 }
-
-        // 기본 진동에 약한 2차 하모닉을 더해 덜 기계적인 바람 흔들림
-        currentSway = amplitude * (sin(phase) + 0.25 * sin(2.3 * phase))
-        renderCurrentFrame()
+    /// 회귀 테스트용. 실제 움직임을 담당하는 두 레이어 모두 애니메이션이 있어야 한다.
+    var animatedLayerCountForDiagnostics: Int {
+        [
+            trunkLayer.animation(forKey: Self.trunkAnimationKey),
+            canopyLayer.animation(forKey: Self.canopyAnimationKey),
+        ].compactMap { $0 }.count
     }
 
-    private func renderCurrentFrame() {
-        guard !suspended else { return }
+    var canopyTranslationForDiagnostics: CGFloat {
+        (canopyLayer.presentation() ?? canopyLayer).transform.m41
+    }
 
-        // 0.25pt 단위로 양자화하면 28pt 아이콘에서는 차이가 보이지 않으면서 같은 프레임을
-        // 재사용할 수 있다. 같은 키가 연속되면 status item 자체도 다시 그리지 않는다.
-        let swayQuarterPoints = Int((currentSway * 4).rounded())
-        let key = FrameKey(
-            swayQuarterPoints: swayQuarterPoints,
-            awake: awake,
-            warningLevel: warningLevel)
-        guard key != lastFrameKey else { return }
-        lastFrameKey = key
+    private func configureLayers() {
+        guard let rootLayer = iconView.layer else { return }
+        rootLayer.masksToBounds = false
 
-        if let cached = frameCache[key] {
-            button?.image = cached
+        let bounds = CGRect(origin: .zero, size: TreeIcon.canvas)
+
+        trunkLayer.bounds = bounds
+        trunkLayer.anchorPoint = CGPoint(
+            x: Self.baseX / TreeIcon.canvas.width,
+            y: Self.baseY / TreeIcon.canvas.height)
+        trunkLayer.position = CGPoint(x: Self.baseX, y: Self.baseY)
+        trunkLayer.fillColor = nil
+        trunkLayer.lineWidth = 3
+        trunkLayer.lineCap = .round
+        let trunkPath = CGMutablePath()
+        trunkPath.move(to: CGPoint(x: Self.baseX, y: Self.baseY))
+        trunkPath.addCurve(
+            to: CGPoint(x: Self.baseX, y: Self.trunkTopY),
+            control1: CGPoint(x: Self.baseX, y: Self.baseY + 4),
+            control2: CGPoint(x: Self.baseX, y: Self.trunkTopY - 3))
+        trunkLayer.path = trunkPath
+
+        canopyLayer.frame = bounds
+        let canopyPath = CGMutablePath()
+        addCircle(to: canopyPath, cx: 14, cy: 12.5, radius: 5.5)
+        addCircle(to: canopyPath, cx: 9.5, cy: 11.5, radius: 3.8)
+        addCircle(to: canopyPath, cx: 18.5, cy: 11.5, radius: 3.8)
+        addCircle(to: canopyPath, cx: 14, cy: 16.3, radius: 3.8)
+        canopyLayer.path = canopyPath
+
+        awakeBadgeLayer.frame = bounds
+        let badgePath = CGMutablePath()
+        addCircle(to: badgePath, cx: 25.5, cy: 3, radius: 2.3)
+        awakeBadgeLayer.path = badgePath
+
+        rootLayer.addSublayer(trunkLayer)
+        rootLayer.addSublayer(canopyLayer)
+        rootLayer.addSublayer(awakeBadgeLayer)
+    }
+
+    private func applyState() {
+        guard !stopped else { return }
+        let color = resolvedTint(for: warningLevel).cgColor
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trunkLayer.strokeColor = color
+        canopyLayer.fillColor = color
+        awakeBadgeLayer.fillColor = color
+        awakeBadgeLayer.isHidden = !awake
+        CATransaction.commit()
+
+        suspended ? removeAnimationsAndReset() : installCurrentAnimation()
+    }
+
+    private func installCurrentAnimation() {
+        guard cpuBucket > 0 else {
+            removeAnimationsAndReset()
             return
         }
 
-        let image = TreeIcon.image(
-            sway: CGFloat(swayQuarterPoints) / 4,
-            awake: awake,
-            tint: Theme.warningColor(for: warningLevel))
-        frameCache[key] = image
-        button?.image = image
+        let sways = (0...Self.sampleCount).map { index -> CGFloat in
+            let phase = CGFloat(index) / CGFloat(Self.sampleCount) * 2 * .pi
+            return amplitude * (sin(phase) + 0.25 * sin(2 * phase))
+        }
+        let keyTimes = (0...Self.sampleCount).map {
+            NSNumber(value: Double($0) / Double(Self.sampleCount))
+        }
+        let trunkHeight = Self.trunkTopY - Self.baseY
+        let angles = sways.map { NSNumber(value: Double(atan($0 / trunkHeight))) }
+        let translations = sways.map { NSNumber(value: Double($0)) }
+        let duration = cycleDuration
+
+        let trunkAnimation = makeAnimation(
+            keyPath: "transform.rotation.z", values: angles, keyTimes: keyTimes,
+            duration: duration)
+        trunkLayer.add(trunkAnimation, forKey: Self.trunkAnimationKey)
+
+        let canopyAnimation = makeAnimation(
+            keyPath: "transform.translation.x", values: translations, keyTimes: keyTimes,
+            duration: duration)
+
+        // 타이머 콜백에서 애니메이션을 교체할 때도 추가 작업까지 확실히 커밋한다.
+        // 제거/초기화만 먼저 커밋하면 status item은 첫 자세에 고정될 수 있다.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trunkLayer.removeAnimation(forKey: Self.trunkAnimationKey)
+        canopyLayer.removeAnimation(forKey: Self.canopyAnimationKey)
+        trunkLayer.transform = CATransform3DIdentity
+        canopyLayer.transform = CATransform3DIdentity
+        trunkLayer.add(trunkAnimation, forKey: Self.trunkAnimationKey)
+        canopyLayer.add(canopyAnimation, forKey: Self.canopyAnimationKey)
+        CATransaction.commit()
+    }
+
+    private func makeAnimation(
+        keyPath: String, values: [NSNumber], keyTimes: [NSNumber], duration: TimeInterval
+    ) -> CAKeyframeAnimation {
+        let animation = CAKeyframeAnimation(keyPath: keyPath)
+        animation.values = values
+        animation.keyTimes = keyTimes
+        animation.calculationMode = .linear
+        animation.duration = duration
+        animation.repeatCount = .infinity
+        animation.preferredFrameRateRange = CAFrameRateRange(
+            minimum: 15, maximum: 30, preferred: 24)
+        return animation
+    }
+
+    private func removeAnimationsAndReset() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trunkLayer.removeAnimation(forKey: Self.trunkAnimationKey)
+        canopyLayer.removeAnimation(forKey: Self.canopyAnimationKey)
+        trunkLayer.transform = CATransform3DIdentity
+        canopyLayer.transform = CATransform3DIdentity
+        CATransaction.commit()
+    }
+
+    private var normalizedBucket: CGFloat {
+        CGFloat(cpuBucket) / CGFloat(Self.bucketCount)
+    }
+
+    private var amplitude: CGFloat {
+        0.6 + 5.9 * normalizedBucket
+    }
+
+    private var cycleDuration: TimeInterval {
+        let frequency = 1.8 + 8.2 * Double(normalizedBucket)
+        return 2 * .pi / frequency
+    }
+
+    private func resolvedTint(for level: UsageLevel) -> NSColor {
+        var color = Theme.warningColor(for: level) ?? .labelColor
+        iconView.effectiveAppearance.performAsCurrentDrawingAppearance {
+            color = (Theme.warningColor(for: level) ?? .labelColor)
+                .usingColorSpace(.deviceRGB) ?? .labelColor
+        }
+        return color
+    }
+
+    private func addCircle(
+        to path: CGMutablePath, cx: CGFloat, cy: CGFloat, radius: CGFloat
+    ) {
+        path.addEllipse(
+            in: CGRect(
+                x: cx - radius, y: cy - radius,
+                width: radius * 2, height: radius * 2))
     }
 }

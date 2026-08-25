@@ -56,6 +56,9 @@ final class HistoryPanelController {
             self.resignObserver = nil
         }
         self.panel = nil
+        if let host = panel.contentView as? NSHostingView<AnyView> {
+            host.rootView = AnyView(EmptyView())
+        }
         panel.orderOut(nil)
         panel.contentView = nil
         panel.close()
@@ -66,7 +69,7 @@ final class HistoryPanelController {
     }
 
     private func makePanel() -> FloatingPanel {
-        let host = NSHostingView(rootView: HistoryView(model: viewModel))
+        let host = NSHostingView(rootView: AnyView(HistoryView(model: viewModel)))
         let panel = FloatingPanel.makePopover(
             contentView: host, width: Self.panelWidth)
 
@@ -120,7 +123,13 @@ final class HistoryViewModel: ObservableObject {
     var onSelect: ((ClipboardItem) -> Void)?
     var onClose: (() -> Void)?
 
+    private var reloadTask: Task<Void, Never>?
+    private var presentationGeneration = 0
+    private var isPresented = false
+
     func prepareForPresentation() {
+        isPresented = true
+        presentationGeneration &+= 1
         if searchText.isEmpty {
             reload()
         } else {
@@ -130,13 +139,31 @@ final class HistoryViewModel: ObservableObject {
     }
 
     func unload() {
+        isPresented = false
+        presentationGeneration &+= 1
+        reloadTask?.cancel()
+        reloadTask = nil
         items = []
         selectedIndex = 0
     }
 
     func reload() {
-        items = ClipboardStore.shared.items(matching: searchText)
-        if selectedIndex >= items.count { selectedIndex = max(0, items.count - 1) }
+        guard isPresented else { return }
+        let query = searchText
+        let generation = presentationGeneration
+        reloadTask?.cancel()
+        reloadTask = Task { [weak self] in
+            let loaded = await ClipboardStore.shared.items(matching: query)
+            guard !Task.isCancelled, let self else { return }
+            guard self.isPresented, self.presentationGeneration == generation,
+                self.searchText == query
+            else { return }
+            self.items = loaded
+            if self.selectedIndex >= loaded.count {
+                self.selectedIndex = max(0, loaded.count - 1)
+            }
+            self.reloadTask = nil
+        }
     }
 
     func selectCurrent() {
@@ -151,13 +178,25 @@ final class HistoryViewModel: ObservableObject {
     }
 
     func togglePin(_ item: ClipboardItem) {
-        ClipboardStore.shared.setPinned(!item.pinned, id: item.id)
-        reload()
+        let generation = presentationGeneration
+        Task { [weak self] in
+            let changed = await ClipboardStore.shared.setPinned(!item.pinned, id: item.id)
+            guard changed, let self, self.isPresented,
+                self.presentationGeneration == generation
+            else { return }
+            self.reload()
+        }
     }
 
     func delete(_ item: ClipboardItem) {
-        ClipboardStore.shared.delete(id: item.id)
-        reload()
+        let generation = presentationGeneration
+        Task { [weak self] in
+            let changed = await ClipboardStore.shared.delete(id: item.id)
+            guard changed, let self, self.isPresented,
+                self.presentationGeneration == generation
+            else { return }
+            self.reload()
+        }
     }
 
     func moveSelection(_ delta: Int) {
