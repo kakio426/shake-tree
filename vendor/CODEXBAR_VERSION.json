@@ -1,0 +1,8 @@
+{
+  "version": "0.82.0",
+  "release": "https://github.com/steipete/CodexBar/releases/tag/v0.82.0",
+  "archive_sha256": "b8f4bc3a42e07d23ad3621d89961892c28228310589118228d0620ce45cae4aa",
+  "member": "CodexBar.app/Contents/Helpers/CodexBarCLI",
+  "helper_sha256": "ff1070dfd294ecd5689782bb3d7445da080b27fac9873d01c8ad7e9172c4328b",
+  "signer": "Developer ID Application: Peter Steinberger (Y5PE65HELJ)"
+}

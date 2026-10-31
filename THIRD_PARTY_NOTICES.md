@@ -4,7 +4,9 @@
 
 이 저장소는 [steipete/CodexBar](https://github.com/steipete/CodexBar)의 번들 CLI 실행 파일
 (`Contents/Helpers/CodexBarCLI`)을 `vendor/codexbar-cli`로 그대로 포함하고 있습니다.
-Codex·Claude 사용량 조회에 쓰이며, 원본 서명을 유지한 채 재배포합니다.
+Codex·Claude·Antigravity 등의 사용량 조회에 쓰이며, 원본 서명을 유지한 채 재배포합니다.
+현재 버전은 공식 0.82.0 릴리스입니다. 원본 경로와 해시는
+[`vendor/CODEXBAR_VERSION.json`](vendor/CODEXBAR_VERSION.json)에 기록합니다.
 
 This repository vendors the bundled CLI executable from
 [steipete/CodexBar](https://github.com/steipete/CodexBar) (`Contents/Helpers/CodexBarCLI`),

@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 CONFIG="${1:-release}"
-VERSION="${SHAKETREE_VERSION:-0.2.1}"
+VERSION="${SHAKETREE_VERSION:-0.4.0}"
 BUILD_NUMBER="${SHAKETREE_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 GIT_REVISION="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 if [[ -n "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
@@ -12,9 +12,10 @@ if [[ -n "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]]; th
 fi
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-swift build -c "$CONFIG"
+swift build -c "$CONFIG" --jobs 2
 
-BIN=".build/$CONFIG/ShakeTree"
+BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+BIN="$BIN_DIR/ShakeTree"
 APP="dist/Shake Tree.app"
 
 rm -rf "$APP"
@@ -24,7 +25,18 @@ cp "$BIN" "$APP/Contents/MacOS/ShakeTree"
 # Codex/Claude 사용량 조회 CLI를 함께 번들 (CodexBar 앱 없이 동작).
 # vendor/codexbar-cli 는 CodexBar.app(MIT)의 Helpers/CodexBarCLI 를 복사해 둔 것.
 if [[ -f vendor/codexbar-cli ]]; then
+    python3 -B - <<'PY'
+import hashlib, json
+from pathlib import Path
+metadata = json.loads(Path('vendor/CODEXBAR_VERSION.json').read_text())
+with Path('vendor/codexbar-cli').open('rb') as binary:
+    actual = hashlib.file_digest(binary, 'sha256').hexdigest()
+if actual != metadata['helper_sha256']:
+    raise SystemExit('error: codexbar-cli SHA256 differs from the pinned release')
+PY
+    codesign --verify --strict vendor/codexbar-cli
     cp vendor/codexbar-cli "$APP/Contents/Helpers/codexbar-cli"
+    cp vendor/CODEXBAR_VERSION.json "$APP/Contents/Resources/CODEXBAR_VERSION.json"
     chmod +x "$APP/Contents/Helpers/codexbar-cli"
 else
     echo "warning: vendor/codexbar-cli 없음 — 사용량 기능이 비활성화됩니다"

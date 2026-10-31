@@ -11,16 +11,19 @@ scripts/build-app.sh release
 
 # 설치 직전 활성 상태를 기억해 짧은 재시작 후 무기한 잠들지 않기를 복원한다.
 WAS_AWAKE=0
+AWAKE_END=0
+# grep -q can close the pipe early and make pmset fail under pipefail.
+# Consume its full output so a live assertion is not mistaken for an off state.
 if /usr/bin/pmset -g assertions \
-    | /usr/bin/grep -Eq 'pid [0-9]+\(ShakeTree\).*PreventUserIdleDisplaySleep'
+    | /usr/bin/grep -E 'pid [0-9]+\(ShakeTree\).*PreventUserIdle(Display|System)Sleep' >/dev/null
 then
     WAS_AWAKE=1
+    AWAKE_END="$(defaults read dev.yubyeongju.shaketree awakeSessionEndsAt 2>/dev/null || echo 0)"
 fi
 
 # 먼저 정상 종료를 요청하고 기다린다. 응답하지 않을 때만 TERM으로 마무리한다.
 if pgrep -x ShakeTree >/dev/null 2>&1; then
-    /usr/bin/osascript -e 'tell application id "dev.yubyeongju.shaketree" to quit' \
-        >/dev/null 2>&1 || true
+    SHAKETREE_POST=quit "$SOURCE/Contents/MacOS/ShakeTree" >/dev/null 2>&1 || true
     for _ in {1..50}; do
         pgrep -x ShakeTree >/dev/null 2>&1 || break
         sleep 0.1
@@ -86,7 +89,32 @@ if [[ "$RUNNING_COMMAND" != "$TARGET/Contents/MacOS/ShakeTree" ]]; then
 fi
 
 if (( WAS_AWAKE )); then
-    SHAKETREE_POST=toggle-awake "$TARGET/Contents/MacOS/ShakeTree"
+    RESTORED_AWAKE=0
+    for _ in {1..10}; do
+        REMAINING_SECONDS="$(python3 - "$AWAKE_END" <<'PY'
+import sys, time
+try:
+    end = float(sys.argv[1])
+except ValueError:
+    end = 0
+print(max(0, end - time.time()) if end > 0 else -1)
+PY
+)"
+        if [[ "$REMAINING_SECONDS" == "0" ]]; then
+            RESTORED_AWAKE=1  # The session expired naturally during installation.
+            break
+        fi
+        SHAKETREE_RESTORE_SECONDS="$REMAINING_SECONDS" SHAKETREE_POST=restore-awake "$TARGET/Contents/MacOS/ShakeTree"
+        if [[ "$(defaults read dev.yubyeongju.shaketree awakeSessionActive 2>/dev/null || echo 0)" == "1" ]]; then
+            RESTORED_AWAKE=1
+            break
+        fi
+        sleep 0.1
+    done
+    if (( ! RESTORED_AWAKE )); then
+        echo "error: 새 앱은 실행됐지만 잠들지 않기 복원에 실패했습니다. 백업: $BACKUP_APP" >&2
+        exit 1
+    fi
 fi
 
 # 새 앱과 실행 경로까지 확인된 뒤에만 이전 번들을 제거한다.

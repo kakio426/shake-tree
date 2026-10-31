@@ -6,20 +6,40 @@ import SwiftUI
 /// 패널 전환)은 AppDelegate가 주입한다. 종전에 AppDelegate가 하던 메뉴 갱신·알럿
 /// 처리가 모두 여기로 모였다.
 @MainActor
+final class SystemStateModel: ObservableObject {
+    @Published var snapshot = SystemSnapshot.empty
+}
+
+@MainActor
 final class AppModel: ObservableObject {
     struct UsageState {
         var usages: [ProviderUsage] = []
         var statusText = ""
+        var isRefreshing = false
+        var progress: UsageRefreshProgress?
     }
 
     struct AwakeState: Equatable {
         var active = false
         var endsAt: Date?
+        var mode: AwakeMode = .systemOnly
+        var sessionDuration: TimeInterval?
+        var error: String?
+        var notice: String?
     }
 
     // 자주 바뀌는 값은 섹션별 스냅샷 하나로 발행한다. 개별 @Published 12개를 연달아
     // 바꾸면 같은 화면이 한 샘플마다 여러 번 다시 배치된다.
-    @Published private(set) var system = SystemSnapshot.empty
+    let systemState = SystemStateModel()
+    var system: SystemSnapshot { systemState.snapshot }
+    @Published private(set) var resources: ResourceSettings
+    @Published private(set) var power = PowerSnapshot()
+    private let defaults: UserDefaults?
+    var onResourcesChange: (() -> Void)?
+    var showSettingsWindow: ((SettingsPage) -> Void)?
+    var showDetailWindow: ((DetailPage) -> Void)?
+    func openSettings(_ page: SettingsPage) { showSettingsWindow?(page) }
+    func openDetails(_ page: DetailPage) { showDetailWindow?(page) }
 
     // AI 사용량 (캐시를 즉시 표시하고, 패널 열기/저주기 백그라운드에서 갱신)
     @Published private(set) var usage = UsageState()
@@ -35,40 +55,59 @@ final class AppModel: ObservableObject {
     // 주입 지점 — 인스턴스 서비스와 화면 전환은 AppDelegate가 연결한다
     var startScreenshotWatcher: ((Bool) -> Void)?
     var showHistoryPanel: (() -> Void)?
+    var refreshUsage: (() -> Void)?
+    var cancelUsageRefresh: (() -> Void)?
+    var refreshUsageProvider: ((String) -> Void)?
 
     private let keepAwake: KeepAwake
 
-    init(keepAwake: KeepAwake) {
+    init(keepAwake: KeepAwake, defaults: UserDefaults? = .standard) {
         self.keepAwake = keepAwake
+        self.defaults = defaults
+        resources = ResourceSettings(defaults: defaults)
+    }
+
+    func setResource(_ key: WritableKeyPath<ResourceSettings, Bool>, to value: Bool) {
+        resources[keyPath: key] = value
+        if let defaults { resources.save(to: defaults) }
+        onResourcesChange?()
+    }
+    func updatePower(_ next: PowerSnapshot) {
+        if power != next { power = next }
     }
 
     func updateSystem(_ snapshot: SystemSnapshot) {
         guard snapshot != system else { return }
-        system = snapshot
+        systemState.snapshot = snapshot
     }
 
-    func updateUsage(_ usages: [ProviderUsage], statusText: String) {
-        usage = UsageState(usages: usages, statusText: statusText)
+    func updateUsage(_ usages: [ProviderUsage], statusText: String, isRefreshing: Bool = false,
+                     progress: UsageRefreshProgress? = nil) {
+        usage = UsageState(usages: usages, statusText: statusText, isRefreshing: isRefreshing, progress: progress)
     }
 
     func syncAwake(from service: KeepAwake) {
-        let next = AwakeState(active: service.isActive, endsAt: service.endsAt)
+        let next = AwakeState(active: service.isActive, endsAt: service.endsAt,
+                              mode: service.mode, sessionDuration: service.sessionDuration,
+                              error: service.lastError, notice: service.lastNotice)
         if next != awake { awake = next }
     }
 
     /// 토글 우클릭과 같은 의미의 빠른 on/off도 칩으로 통해서만 — nil이면 무기한.
     func enableAwake(minutes: Int?) {
-        keepAwake.enable(duration: minutes.map { TimeInterval($0 * 60) })
+        keepAwake.enable(duration: minutes.map { TimeInterval($0) * 60 })
     }
 
     func disableAwake() {
         keepAwake.disable()
     }
 
+    func setAwakeMode(_ mode: AwakeMode) { keepAwake.setMode(mode) }
+
     /// 상태 줄 문구: 꺼짐 / 무기한 / HH:mm까지
     var awakeStateText: String {
         guard awake.active else { return "꺼짐" }
-        return awake.endsAt.map { "\(Theme.clockText($0))까지" } ?? "무기한"
+        return (awake.endsAt.map { "\(Theme.clockText($0))까지" } ?? "무기한") + " · " + awake.mode.title
     }
 
     func setScreenshotMode(_ mode: ScreenshotMode) {
@@ -202,14 +241,16 @@ final class MainPanelController {
     var onVisibilityChange: ((Bool) -> Void)?
 
     private let model: AppModel
+    private let maximumHeight: CGFloat?
 
     /// 수명주기 진단과 회귀 테스트용. 닫힌 뒤 false여야 숨은 SwiftUI 트리가 없다.
     var hasLoadedPanel: Bool { panel != nil }
     /// 강한 참조를 만들지 않고 실제 NSHostingView 해제를 검증하기 위한 진단 포인터.
     private(set) weak var hostedViewForDiagnostics: NSView?
 
-    init(model: AppModel) {
+    init(model: AppModel, maximumHeight: CGFloat? = nil) {
         self.model = model
+        self.maximumHeight = maximumHeight
     }
 
     func toggle() {
@@ -271,12 +312,14 @@ final class MainPanelController {
             rootView: AnyView(
                 MainPanelView(
                 model: model,
+                maximumHeight: maximumHeight ?? max(180, ((anchorButton?.window?.screen ?? NSScreen.main)?.visibleFrame.height ?? 716) - 16),
                 onClose: { [weak self] in self?.close() },
                 onHeightChange: { [weak self] height in
                     self?.scheduleResize(to: height)
                 })))
         hostedViewForDiagnostics = host
         let panel = FloatingPanel.makePopover(contentView: host, width: Theme.panelWidth)
+        panel.title = "Shake Tree"
 
         // 바깥을 클릭해 포커스를 잃으면 닫힌다 (메뉴처럼)
         let resignKeyObserver = NotificationCenter.default.addObserver(

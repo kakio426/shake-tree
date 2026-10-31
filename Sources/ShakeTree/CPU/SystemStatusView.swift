@@ -5,7 +5,7 @@ import SwiftUI
 /// 보여준다. 셋 다 평소엔 단색이고, 위험 수준일 때만 색을 입힌다 — 아래 AI 사용량의
 /// 상시 색상 게이지와 구분된다.
 /// (RAM/디스크는 평소에도 높게 유지되는 게 정상이라 CPU보다 높은 경고 기준선을 쓴다.)
-struct SystemStatusView: View {
+struct SystemStatusView: View, Equatable {
     let snapshot: SystemSnapshot
 
     var body: some View {
@@ -23,36 +23,32 @@ struct SystemStatusView: View {
                     detail: gbText(snapshot.memUsedGB, snapshot.memTotalGB), detailColor: ramColor)
                 memoryDetailRow()
             }
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 10) {
                     rowLabel(icon: "internaldrive", text: "저장")
-                    segmentedMeter(
-                        fraction: snapshot.diskFraction, extraFraction: purgeableFraction)
-                        .frame(height: 6)
-                        .frame(height: 22)
-                    detailText(
-                        gbText(snapshot.diskUsedGB, snapshot.diskTotalGB), color: diskColor)
+                    storageMeter.frame(height: 6).frame(height: 22)
+                    detailText(gbText(snapshot.diskUsedGB, snapshot.diskTotalGB), color: diskColor)
                 }
-                if snapshot.diskPurgeableGB >= 1 {
-                    HStack(spacing: 10) {
-                        Color.clear.frame(width: Theme.labelWidth, height: 0)
-                        Text(
-                            "정리 가능 \(String(format: "%.1f", snapshot.diskPurgeableGB))GB")
-                            .font(Theme.subnumber)
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 0)
+                if snapshot.diskTotalGB > 0 {
+                    HStack {
+                        Text(String(format: "파일·시스템 %.1fGB", snapshot.storage.fileSystemGB))
+                        Spacer(minLength: 4)
+                        Text(String(format: "스왑 파일 %.1fGB", snapshot.storage.swapGB))
+                            .foregroundStyle(.blue)
                     }
+                    .font(Theme.caption)
+                    Text(String(format: "스왑 사용 %.1f / 확보 %.1fGB", snapshot.swapUsedGB, snapshot.swapAllocatedGB))
+                        .font(Theme.microDigit).foregroundStyle(.secondary)
+                    Text(String(format: "즉시 여유 %.1fGB · 정리 가능 %.1fGB", snapshot.storage.freeGB, snapshot.storage.reclaimableGB))
+                        .font(Theme.microDigit).foregroundStyle(.secondary)
+                } else {
+                    Text("저장공간 확인 중…").font(Theme.micro).foregroundStyle(.secondary)
                 }
             }
+            .help("스왑 파일 확보량을 저장 점유량에서 분리합니다. 현재 사용 중인 스왑 페이지와 확보한 파일 크기는 다릅니다. 정리 가능 공간은 파일·시스템에 포함됩니다.")
         }
     }
 
-    private var purgeableFraction: Double {
-        guard snapshot.diskTotalGB > 0 else { return 0 }
-        return min(
-            max(snapshot.diskPurgeableGB / snapshot.diskTotalGB, 0),
-            1 - snapshot.diskFraction)
-    }
 
     /// 총량이 작을수록(=RAM) 소수 한 자리까지 — 17GB짜리를 정수로 반올림하면
     /// 1GB 미만의 변화가 통째로 사라져서 값이 멈춰 있는 것처럼 보인다.
@@ -71,10 +67,8 @@ struct SystemStatusView: View {
     /// 압축 메모리는 항상, 스왑은 실제로 쓰이고 있을 때만 표시 —
     /// 스왑 0인 건 건강한 상태라 굳이 자리를 차지할 이유가 없다.
     private var memoryDetailText: String {
-        var parts = [String(format: "압축 %.1fGB", snapshot.memCompressedGB)]
-        if snapshot.swapUsedGB >= 0.05 {
-            parts.append(String(format: "스왑 %.1fGB", snapshot.swapUsedGB))
-        }
+        let parts = [String(format: "압축 %.1fGB", snapshot.memCompressedGB)]
+
         return parts.joined(separator: "  ·  ")
     }
 
@@ -103,21 +97,19 @@ struct SystemStatusView: View {
 
     // 디스크: 실사용(상태 색) + 정리 가능 영역(옅은 회색)을 한 트랙에 두 색으로.
     // raw 사용량이 왜 Finder보다 크게 보이는지 게이지에서 바로 설명되게 한다.
-    private func segmentedMeter(fraction: Double, extraFraction: Double) -> some View {
+    private var storageMeter: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.secondary.opacity(0.25))
-                HStack(spacing: 2) {
-                    Capsule()
-                        .fill(diskColor)
-                        .frame(width: proxy.size.width * min(max(fraction, 0), 1))
-                    if extraFraction > 0.004 {
-                        Capsule()
-                            .fill(Color.primary.opacity(0.3))
-                            .frame(width: proxy.size.width * extraFraction)
-                    }
+                Capsule().fill(Color.secondary.opacity(0.18))
+                HStack(spacing: 0) {
+                    Rectangle().fill(diskColor)
+                        .frame(width: proxy.size.width * snapshot.storage.ordinaryFraction)
+                    Rectangle().fill(Color.blue)
+                        .frame(width: proxy.size.width * snapshot.storage.swapFraction)
+                    Rectangle().fill(Color.primary.opacity(0.3))
+                        .frame(width: proxy.size.width * snapshot.storage.purgeableFraction)
                 }
-            }
+            }.clipShape(Capsule())
         }
     }
 

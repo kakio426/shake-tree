@@ -13,6 +13,8 @@ final class ClipboardWatcher {
 
     private var changeCount = NSPasteboard.general.changeCount
     private var isRunning = false
+    private var timer: Timer?
+    var isPollingForDiagnostics: Bool { timer != nil }
     var onChange: (() -> Void)?
 
     // 변경은 감지됐지만 아직 내용을 못 읽은(=앱이 쓰는 중인) changeCount와 재시도 횟수.
@@ -35,12 +37,32 @@ final class ClipboardWatcher {
     }
 
     func stop() {
+        timer?.invalidate()
+        timer = nil
         isRunning = false
         resetPending()
     }
 
-    /// AppDelegate의 0.5초 시스템 샘플 타이머와 같은 틱을 공유한다. 별도 타이머를
-    /// 만들지 않아 동일 주기의 불필요한 런루프 깨우기를 하나 줄인다.
+    func configurePolling(enabled: Bool, suspended: Bool) {
+        if !enabled { stop(); return }
+        if !isRunning { start() }
+        if suspended {
+            timer?.invalidate()
+            timer = nil
+            return
+        }
+        guard timer == nil else { return }
+        // Keep the last changeCount across screen sleep so the latest copy is read on wake.
+        poll()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.poll() }
+        }
+        timer.tolerance = 0.08
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    /// The watcher owns its 0.5s timer; disabling it or locking the screen releases that timer.
     func poll() {
         guard isRunning else { return }
         check()

@@ -16,11 +16,11 @@ RunCat + CodexBar + Maccy + Amphetamine을 하나로 합친 개인용 macOS 메�
 
 | 기능 | 설명 |
 |---|---|
-| 🌳 흔들리는 나무 | CPU 사용률 = 바람 세기. 0.5초 간격 샘플링 + 제곱근 곡선이라 저·중간 CPU 구간에서도 변화가 잘 느껴짐. 평소엔 흑백(라이트/다크 메뉴바 자동 대응)이지만 CPU 95%↑ 또는 RAM 92%↑면 빨강, 80%↑면 주황으로 아이콘 자체가 물듦 |
-| 📊 CPU·RAM·저장공간 | 메뉴 맨 위에 CPU%·RAM(GB)은 최근 1분 미니 그래프로, 저장공간(GB)은 채움 막대로 표시. 평소엔 단색이고 위험 수준에서만 색이 바뀜(디스크는 평소에도 높게 유지되는 게 정상이라 CPU보다 높은 경고 기준선 사용. RAM은 사용량 %가 아니라 커널의 실제 메모리 압박 신호로 판단 — macOS가 유휴 메모리를 파일 캐시로 항상 꽉 채우는 게 정상이라 %만 보면 늘 경고 상태가 되어버림). RAM 사용량은 Activity Monitor와 같은 정의(앱 메모리 + 유선 + 압축됨)로 계산하고, 바로 아래 줄에 **압축 메모리·스왑 사용량**을 함께 표시 — 램이 꽉 찬 맥에서는 사용량 GB가 천장에 붙어 안 움직이는 게 정상이라, 실제로 상태를 알려주는 건 이쪽이다 |
+| 🌳 흔들리는 나무 | CPU 사용률 = 바람 세기. 절전 기본 5초(패널 열림 2초) 간격 샘플링 + 제곱근 곡선이라 저·중간 CPU 구간에서도 변화가 잘 느껴짐. 평소엔 흑백(라이트/다크 메뉴바 자동 대응)이지만 CPU 95%↑ 또는 심각한 메모리 압박이면 빨강, CPU 80%↑ 또는 메모리 압박 경고이면 주황으로 아이콘 자체가 물듦 |
+| 📊 CPU·RAM·저장공간 | CPU·RAM 추이와 저장 점유량을 표시. 저장은 파일·시스템과 스왑 파일을 분리하며, 스왑의 현재 사용량과 확보 용량도 따로 표시. 정리 가능 공간은 파일·시스템에 포함되어 중복 계산하지 않음 |
 | 🤖 Codex·Claude 사용량 | 세션/주간 "남은 %" 게이지 + 리셋 시각. 번들된 CLI로 조회 — **CodexBar 앱 설치 불필요** |
 | 📋 클립보드 히스토리 | 텍스트·이미지·파일 지원, 검색, 핀 고정, **⇧⌘V**로 메뉴바 아래 드롭다운. 비밀번호 매니저가 복사한 항목은 기록 안 함 |
-| ☕ 잠들지 않기 | 나무 **우클릭**으로 화면 잠자기 즉시 켜기/끄기(켜지면 아이콘에 점 표시), 좌클릭 메뉴에서 무기한/30분/1·2·4시간 지정 |
+| ☕ 잠들지 않기 | 우클릭으로 즉시 토글. 무기한·30분·1/2/4시간 또는 1~1440분 직접 지정. **화면 끄기 허용 / 화면도 유지** 선택, 선택한 모드로 OS 유휴 잠자기 방지. 시간 만료 시 OS에서도 자동 해제 |
 | 📸 스크린샷 | 두 가지 모드 — **다운로드+클립보드**(파일 저장 + 클립보드 자동 복사) 또는 **클립보드만**(파일 없이 바로 복사). 두 모드 다 캡처 후 뜨는 '미리보기 썸네일'을 꺼서 즉시 반영(썸네일이 켜져 있으면 파일 쓰기가 몇 초 늦어져 복사도 지연됨) |
 
 <details>
@@ -28,11 +28,11 @@ RunCat + CodexBar + Maccy + Amphetamine을 하나로 합친 개인용 macOS 메�
 
 | Feature | Description |
 |---|---|
-| 🌳 Swaying tree | CPU usage = wind strength. Sampled every 0.5s with a square-root response curve so changes are noticeable even in the low/mid CPU range. Monochrome by default (auto light/dark), turns red above CPU 95% / RAM 92%, orange above 80% |
-| 📊 CPU/RAM/Disk | At the top of the menu: CPU% and RAM (GB) as 1-minute mini sparklines, disk usage (GB) as a fill meter. Monochrome by default, colored only when critical (disk uses a higher threshold than CPU since it sits high as normal behavior; RAM coloring is driven by the kernel's actual memory-pressure signal rather than raw usage %, since macOS keeps free RAM filled with file cache as normal behavior, which would otherwise always read as critical). RAM usage uses Activity Monitor's own definition (app memory + wired + compressed), with **compressed memory and swap** on the line just below it — on a Mac at its RAM ceiling the used-GB figure sits pinned near the top by design, and these are the numbers that actually move |
+| 🌳 Swaying tree | CPU usage = wind strength. Sampled every 5s by default (2s with the panel open), with a square-root response curve so changes are noticeable even in the low/mid CPU range. Monochrome by default (auto light/dark), turns red for CPU ≥95% or critical memory pressure, orange for CPU ≥80% or a memory pressure warning |
+| 📊 CPU/RAM/Disk | CPU/RAM trends and physical disk occupancy. File/system storage and allocated swap files are separated; used swap pages and allocated swap capacity are shown independently. Purgeable space remains within file/system occupancy |
 | 🤖 Codex/Claude usage | Session/weekly "remaining %" gauges with reset time, fetched via a bundled CLI — **no CodexBar.app install required** |
 | 📋 Clipboard history | Text/image/file support, search, pinning, **⇧⌘V** dropdown anchored under the menu bar icon. Password-manager copies are never recorded |
-| ☕ Keep awake | **Right-click** the tree to toggle sleep prevention instantly (a dot badge appears on the icon), or pick a duration from the left-click menu |
+| ☕ Keep awake | Right-click to toggle. Indefinite, 30 minutes, 1/2/4 hours, or a custom 1–1440 minutes. Choose system-only idle-sleep prevention (display may sleep) or keeping the display awake too. Native OS timeout releases timed sessions |
 | 📸 Screenshots | Two modes — **Download + clipboard** (save a file and copy to the clipboard) or **clipboard only** (no file, copied directly). Both turn off the floating preview thumbnail so it lands instantly (the thumbnail otherwise delays the file write, and thus the copy, by several seconds) |
 
 </details>
@@ -74,10 +74,10 @@ cookies directly.
 ## 사용법 (Usage)
 
 - **⇧⌘V** — 클립보드 히스토리 드롭다운 (↑↓ 이동, ⏎ 붙여넣기, ⌘1–9 바로 선택, 우클릭 핀/삭제, esc 닫기)
-- 메뉴바 나무 **좌클릭** — 하나의 패널로 열림: 시스템 현황(CPU/RAM/저장) → AI 사용량 → 동작(잠들지 않기·히스토리·스크린샷) → 설정. 바깥 클릭이나 esc로 닫힘
+- 메뉴바 나무 **좌클릭** — 짧은 요약 패널: CPU/RAM/저장, 서비스별 AI 남은 한도, 잠들지 않기, 클립보드. 바깥 클릭이나 esc로 닫힘. 시스템 요약·AI 서비스 행을 누르면 별도 상세 창이 열림
 - 메뉴바 나무 **우클릭**(또는 control-클릭) — 잠들지 않기 즉시 토글
-- 패널 → "스크린샷" 행 — 파일+클립보드 / 클립보드만 중 선택 (선택 시 미리보기 썸네일이 꺼지고, 다시 켜려면 스크린샷 도구 옵션에서 '떠다니는 축소판 보기')
-- 패널 → "설정" 행 — 로그인 시 자동 실행, 히스토리 선택 시 자동 붙여넣기(접근성 권한 필요), 히스토리 비우기, 종료
+- **설정… → 일반 → 스크린샷** — 파일+클립보드 / 클립보드만 중 선택 (선택 시 미리보기 썸네일이 꺼지고, 다시 켜려면 스크린샷 도구 옵션에서 '떠다니는 축소판 보기')
+- **설정…** — 별도 창의 일반 / 자원 사용 / 잠들지 않기 탭. 로그인 시 자동 실행, 자동 붙여넣기(접근성 권한 필요), 기록 비우기·종료, 절전·기능별 수집, 잠자기 방지 시간·화면·세션 정책을 설정
 
 ## 권한 (Permissions)
 
@@ -100,6 +100,17 @@ SHAKETREE_APPICON=/tmp/icon1024.png "/Applications/Shake Tree.app/Contents/MacOS
 
 ## 데이터 (Data)
 
+AI 사용량은 서비스별 조회 시각·계정·출처·리셋 원본 시각을 `usage-cache-v2.json`에
+저장합니다. Antigravity는 Gemini CLI와 별도로 표시하며 Gemini, 외부 모델 공유 한도 및 별도 모델
+한도를 보존합니다. 조회 실패는 카드별로 표시하고, 1시간 이상 지난 값이나 리셋을 지난
+값은 수치 대신 재조회를 안내합니다. 예전 `usage-cache.json`은 보존하되 읽지 않습니다.
+개인 계정의 Gemini CLI OAuth 지원이 종료된 경우 해당 카드에서 Antigravity를 안내합니다.
+
+사용량 조회기는 공식 CodexBar 0.82.0 릴리스의 서명된 실행 파일입니다.
+버전·원본·SHA256은 `vendor/CODEXBAR_VERSION.json`에 고정하며 빌드할 때 확인합니다.
+현재 `agy` 실행 파일은 `~/.gemini/bin/agy` 또는 설치된 Homebrew 경로에서 찾고,
+명시적인 `ANTIGRAVITY_CLI_PATH` 설정이 있으면 그대로 따릅니다.
+
 클립보드 히스토리는 로컬 SQLite에만 저장되고 외부로 전송되지 않습니다:
 `~/Library/Application Support/ShakeTree/clipboard.sqlite` (최대 500개 + 핀 고정 항목)
 
@@ -121,3 +132,34 @@ MIT — [`LICENSE`](LICENSE) 참고. 번들된 서드파티 구성 요소는
 
 <sub>저장소 루트 폴더명만 개발 초기 이름(`quakka`)이 히스토리상 남아 있고, 앱 이름·번들·프로세스는
 모두 <b>Shake Tree</b> / <code>ShakeTree</code>입니다.</sub>
+
+## 낮은 자원 사용 (0.3.0)
+
+- 사용량 조회기는 최대 2개만 동시에 실행합니다. 패널이 닫혀 있으면 정기 조회를 하지 않고, 열 때 오래된 서비스만 갱신합니다. 오류 재시도에는 간격을 둡니다.
+- CPU는 약 1초마다, 숨은 패널의 메모리는 5초마다 샘플링합니다. 디스크 조회는 백그라운드에서 캐시하며 화면 잠금·잠자기 중에는 시스템 샘플과 나무 애니메이션을 멈춥니다.
+- 클립보드는 기존 0.5초 응답을 유지합니다. 나무는 앱이 프레임을 그리는 대신 Core Animation으로 최대 15fps로 움직입니다.
+- 잠들지 않기는 별도 caffeinate 프로세스나 폴링 없이 IOKit assertion과 만료 타이머 하나로 동작합니다. 화면 끄기 허용이 기본이며, 유휴 잠자기만 제어합니다.
+
+검증: `swift test --build-system native --disable-swift-testing` (기존 빌드 경로 재사용).
+
+## 다음 날 갱신 화면 (0.3.1)
+
+- 오래된 수치는 각 한도마다 경고하지 않고 카드 하나의 안내와 마지막 확인 시각으로 묶습니다. 이전 기록은 펼쳐볼 수 있으며 현재 수치로 표시하지 않습니다.
+- 카드별 대기/조회 중 경과 시간과 전체 완료 개수를 표시합니다. 조회 중에는 취소할 수 있고, 완료 후 각 서비스만 다시 조회할 수 있습니다.
+- 전체 조회는 최대 45초이며, 중단 뒤 늦게 돌아온 결과가 새 조회를 덮어쓰지 않습니다. 성공한 서비스는 즉시 캐시에 저장됩니다. 동시 실행 제한 2개와 닫힌 패널의 정기 조회 중단은 유지합니다.
+- 지원이 종료된 개인용 Gemini CLI 카드는 Antigravity와 중복 표시하지 않습니다. 실제 Gemini CLI 조회가 다시 성공하면 카드가 돌아옵니다.
+
+0.3.2부터 Antigravity의 기존 `Claude / GPT` 묶음은 **외부 모델 공유 한도**로 표시합니다.
+이는 안티그래비티 안에서 Claude·GPT-OSS 등이 함께 쓰는 한도이며, 모델별 사용 이력이나
+Claude Code·ChatGPT 구독 한도를 뜻하지 않습니다. 기존 캐시에도 새 표기가 즉시 적용됩니다.
+
+
+## 자원 절감과 세션 관리 (0.4.0)
+
+- 기본 절전 모드는 시스템 수집을 닫힌 패널 5초 / 열린 패널 2초로 조절합니다. 절전을 끄면 3초 / 1초이며, 배터리에서는 절전 주기를 유지합니다. OS 저전력 모드·높은 온도에서는 10초 / 5초로 더 줄이고 나무 애니메이션을 멈춥니다.
+- 시스템 감시·나무 움직임·클립보드 기록·AI 조회를 각각 끌 수 있습니다. 클립보드는 켜져 있고 화면이 활성일 때만 0.5초 간격으로 확인합니다. 화면 잠금·꺼짐 동안 시스템 및 클립보드 타이머를 해제하고, 화면이 돌아오면 최신 클립보드 변경을 확인합니다.
+- 시스템 수집은 별도 서비스가 담당하며 CPU·메모리 측정은 소유한 Mach host 포트를 재사용하고 해제합니다. 시스템 수치 변경은 시스템 화면만 갱신합니다.
+- 조회기는 반복 확인 대신 출력·종료 이벤트와 단발 제한 시간으로 동작합니다. 패널을 닫으면 진행 중 조회도 취소하며, 동시에 실행하는 도우미는 최대 2개입니다.
+- 메뉴바에는 작은 CPU·RAM 추이, 파일·스왑 저장 막대, 2열 AI 잔여량 카드, 잠들지 않기·클립보드를 표시합니다. 설정은 별도 창의 일반/자원 사용/잠들지 않기 탭으로 옮겼습니다. 시스템 요약이나 AI 서비스 행을 누르면 그래프·계정·모델별 한도·리셋 시각을 상세 창에서 확인합니다. AI 요약은 유효한 한도 중 가장 적게 남은 항목과 해당 모델·기간을 함께 표시하며, 합산 비율을 만들지 않습니다. 작은 화면에서는 패널을 스크롤할 수 있습니다.
+- 잠자기 방지에는 화면 모드·남은 시간·종료 이유가 표시됩니다. 배터리로 동작 중 20% 이하이면 자동 해제하고 재시작을 막습니다(설정에서 변경 가능). 덮개 닫기·강제 잠자기는 지원 범위가 아닙니다.
+- 정상 종료 시 세션을 해제합니다. 비정상 종료 후에는 24시간 안에 시작했고 아직 유효한 세션을 복원하며, 해당 복원도 설정에서 끌 수 있습니다. 설치 업데이트 중 기존 세션 보존은 계속 지원합니다.

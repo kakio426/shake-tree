@@ -1,319 +1,217 @@
 import SwiftUI
 
-/// 메인 드롭다운 — 종전의 NSMenu 전체를 하나의 패널로 재구성했다.
-/// 위에서부터: 시스템 현황 → AI 사용량 → 동작 → 설정 → 푸터. 섹션마다 같은
-/// 여백·헤더 리듬을 쓴다.
+/// The menubar is a compact overview. Graphs, accounts and individual quotas live in inspectors.
 struct MainPanelView: View {
     @ObservedObject var model: AppModel
+    var maximumHeight: CGFloat = 700
     let onClose: () -> Void
     let onHeightChange: (CGFloat) -> Void
+    @State private var contentHeight: CGFloat = 100
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            section("시스템") {
-                SystemStatusView(snapshot: model.system)
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("Shake Tree").font(Theme.captionStrong).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("설정…") { model.openSettings(.general) }
+                        .font(Theme.caption).buttonStyle(.plain).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 8)
+                if model.resources.systemEnabled {
+                    Button { model.openDetails(.system) } label: {
+                        CompactSystemView(state: model.systemState)
+                    }
+                    .buttonStyle(.plain).help("시스템 자세히")
+                    .padding(.horizontal, 14).padding(.bottom, 12)
+                    Divider()
+                }
+                if model.resources.usageEnabled {
+                    CompactUsageView(model: model).padding(.horizontal, 14).padding(.vertical, 8)
+                    Divider()
+                }
+                awakeMenu.padding(.horizontal, 14).padding(.vertical, 8)
+                Divider()
+                Button { model.showHistory() } label: {
+                    HStack {
+                        Label("클립보드", systemImage: "doc.on.clipboard")
+                        Spacer()
+                        Text("⇧⌘V").foregroundStyle(.tertiary)
+                    }
+                    .font(Theme.body).contentShape(Rectangle())
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
             }
-            Divider()
-            section("AI 사용량") { usageContent }
-            Divider()
-            ActionSection(model: model)
-            Divider()
-            SettingsSection(model: model)
-            Divider()
-            footer
+            .frame(width: Theme.panelWidth)
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { contentHeight = $0 }
         }
-        .frame(width: Theme.panelWidth)
-        // 부모 창 높이가 콘텐츠 측정값을 다시 바꾸지 않도록 세로 크기는 intrinsic size로
-        // 고정한다. AppKit 패널 리사이즈와 SwiftUI 측정 사이의 피드백 가능성을 줄인다.
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: Theme.panelWidth, height: min(max(contentHeight, 100), max(180, maximumHeight)))
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.cornerRadius))
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.cornerRadius)
-                .strokeBorder(.separator, lineWidth: 1))
-        // 높이가 내용에 따라 변하면(사용량 도착, 섹션 펼침) 상단을 고정한 채 늘어난다
+        .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadius).strokeBorder(.separator, lineWidth: 1))
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { onHeightChange($0) }
     }
 
-    /// 공통 섹션 바디 — 작은 헤더 + 내용, 모든 섹션이 같은 패딩을 쓴다.
-    private func section<Content: View>(
-        _ title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: Theme.rowSpacing) {
-            Text(title)
-                .font(Theme.caption)
-                .foregroundStyle(.tertiary)
-                .textCase(nil)
-            content()
-        }
-        .padding(.horizontal, Theme.horizontalPadding)
-        .padding(.vertical, Theme.blockPadding)
-    }
-
-    @ViewBuilder
-    private var usageContent: some View {
-        if !model.usage.usages.isEmpty {
-            UsageGridView(usages: model.usage.usages)
-        }
-        // 데이터 전/후 공통 상태 줄 — "조회 중…" / "업데이트: 오후 3:04" / 실패 안내
-        Text(model.usage.statusText)
-            .font(Theme.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
-    }
-
-    private var footer: some View {
-        HStack {
-            Text(Self.versionText)
-                .font(Theme.micro)
-                .foregroundStyle(.tertiary)
-            Spacer(minLength: 8)
-            Button(action: { model.quit() }) {
-                Text("종료")
-                    .font(Theme.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .contentShape(Rectangle())
+    private var awakeMenu: some View {
+      HStack(spacing: 6) {
+        Menu {
+            if model.awake.active { Button("잠자기 방지 끄기") { model.disableAwake() }; Divider() }
+            Button("무기한") { model.enableAwake(minutes: nil) }
+            ForEach([30, 60, 120, 240], id: \.self) { minutes in
+                Button(minutes < 60 ? "\(minutes)분" : "\(minutes / 60)시간") { model.enableAwake(minutes: minutes) }
             }
-            .buttonStyle(.plain)
+            Divider()
+            Button("시간·화면 설정…") { model.openSettings(.awake) }
+        } label: {
+            Label("잠들지 않기", systemImage: "moon.zzz")
         }
-        .padding(.horizontal, Theme.horizontalPadding)
-        .padding(.vertical, 7)
+        .menuStyle(.borderlessButton).controlSize(.small).fixedSize()
+        Spacer(minLength: 4)
+        AwakeStatusView(state: model.awake)
+      }
     }
-
-    private static let versionText: String = {
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String
-        let build = info?["CFBundleVersion"] as? String
-        guard let version, let build else { return "Shake Tree" }
-        return "Shake Tree \(version) (\(build))"
-    }()
 }
 
-// MARK: - 동작 섹션
-
-private struct ActionSection: View {
-    @ObservedObject var model: AppModel
-    @State private var awakeExpanded = false
-
+private struct CompactSystemView: View {
+    @ObservedObject var state: SystemStateModel
+    private var snapshot: SystemSnapshot { state.snapshot }
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            PanelRow(
-                icon: "moon.zzz", title: "잠들지 않기",
-                action: {
-                    withAnimation(.easeInOut(duration: 0.15)) { awakeExpanded.toggle() }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 5) {
+                    metric("CPU", Theme.percentText(snapshot.cpuFraction))
+                    Sparkline(values: snapshot.cpuHistory, color: Theme.color(for: SystemThresholds.cpuLevel(snapshot.cpuFraction)))
+                        .frame(height: 18)
                 }
-            ) {
+                VStack(alignment: .leading, spacing: 5) {
+                    metric("RAM", String(format: "%.1f/%.0fGB", snapshot.memUsedGB, snapshot.memTotalGB))
+                    Sparkline(values: snapshot.memHistory, color: Theme.color(for: snapshot.memLevel)).frame(height: 18)
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    metric("저장", snapshot.diskTotalGB > 0 ? String(format: "%.0f/%.0fGB", snapshot.diskUsedGB, snapshot.diskTotalGB) : "확인 중")
+                    storageMeter.frame(height: 5).frame(height: 18)
+                }
+            }
+            if snapshot.diskTotalGB > 0 {
+                HStack(spacing: 6) {
+                    Text(String(format: "파일·시스템 %.1fGB", snapshot.storage.fileSystemGB))
+                    Spacer(minLength: 0)
+                    Text(String(format: "스왑 파일 %.1fGB", snapshot.storage.swapGB))
+                        .foregroundStyle(.blue)
+                }
+                .font(Theme.microDigit).foregroundStyle(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+    private var storageMeter: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.15))
+                HStack(spacing: 0) {
+                    Rectangle().fill(Theme.color(for: SystemThresholds.diskLevel(snapshot.diskFraction)))
+                        .frame(width: proxy.size.width * snapshot.storage.ordinaryFraction)
+                    Rectangle().fill(Color.blue).frame(width: proxy.size.width * snapshot.storage.swapFraction)
+                    Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: proxy.size.width * snapshot.storage.purgeableFraction)
+                }
+            }
+            .clipShape(Capsule())
+        }
+    }
+    private func metric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(Theme.caption).foregroundStyle(.secondary)
+            Text(value).font(Theme.number).lineLimit(1).minimumScaleFactor(0.85)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct CompactUsageView: View {
+    @ObservedObject var model: AppModel
+    static func summaryWindow(_ usage: ProviderUsage, at now: Date) -> ProviderUsage.WindowDisplay? {
+        usage.windows.filter { usage.canShow($0, at: now) }.max { $0.usedPercent < $1.usedPercent }
+    }
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: model.usage.isRefreshing ? 1 : 60)) { context in
+            VStack(alignment: .leading, spacing: 1) {
+                HStack {
+                    Text("AI 남은 한도").font(Theme.captionStrong).foregroundStyle(.secondary)
+                    Spacer()
+                    if let progress = model.usage.progress {
+                        Text(progress.text(at: context.date)).font(Theme.microDigit).foregroundStyle(.secondary)
+                    }
+                    Button {
+                        model.usage.isRefreshing ? model.cancelUsageRefresh?() : model.refreshUsage?()
+                    } label: {
+                        Image(systemName: model.usage.isRefreshing ? "xmark" : "arrow.clockwise")
+                            .font(Theme.caption).frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain).accessibilityLabel(model.usage.isRefreshing ? "사용량 조회 취소" : "사용량 새로고침")
+                }
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(UsageGridView.visibleUsages(model.usage.usages)) { usage in
+                        summaryCard(usage, now: context.date)
+                    }
+                }
+            }
+        }
+    }
+    private func summaryCard(_ usage: ProviderUsage, now: Date) -> some View {
+        let window = Self.summaryWindow(usage, at: now)
+        return Button { model.openDetails(.usage(usage.provider)) } label: {
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 4) {
-                    Text(model.awakeStateText)
-                        .font(Theme.captionStrong)
-                        .foregroundStyle(
-                            model.awake.active ? Color.accentColor : Color.secondary)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(awakeExpanded ? 180 : 0))
+                    Text(usage.displayName).font(Theme.cardTitle).lineLimit(1)
+                    if usage.issue != nil && !usage.isNotice {
+                        Image(systemName: "exclamationmark.circle").font(Theme.caption).foregroundStyle(.orange)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.system(size: 7)).foregroundStyle(.tertiary)
+                }
+                if let window {
+                    let remaining = 100 - window.usedPercent
+                    HStack(spacing: 3) {
+                        Text(context(usage, window)).font(Theme.micro).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                        Spacer(minLength: 0)
+                        Text(Theme.remainingText(remaining)).font(Theme.captionStrong)
+                            .foregroundStyle(Theme.gaugeColor(remainingPercent: remaining)).fixedSize()
+                    }
+                    ThinProgressBar(value: remaining / 100, color: Theme.gaugeColor(remainingPercent: remaining)).frame(height: 4)
+                } else {
+                    Text(usage.refreshState.isPending ? "조회 중" : "재조회 필요")
+                        .font(Theme.caption).foregroundStyle(.secondary)
+                    Capsule().fill(Color.secondary.opacity(0.15)).frame(height: 4)
                 }
             }
-            if awakeExpanded {
-                AwakeDurationGrid(model: model)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-
-            PanelRow(
-                icon: "doc.on.clipboard", title: "클립보드 히스토리",
-                action: { model.showHistory() }
-            ) {
-                Text("⇧⌘V")
-                    .font(Theme.microDigit)
-                    .foregroundStyle(.tertiary)
-            }
-
-            PanelRow(icon: "camera", title: "스크린샷") {
-                Picker("", selection: Binding(
-                    get: { model.screenshotMode },
-                    set: { model.setScreenshotMode($0) }
-                )) {
-                    Text("파일+클립보드").tag(ScreenshotMode.both)
-                    Text("클립보드만").tag(ScreenshotMode.clipboardOnly)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .controlSize(.small)
-                .frame(width: 172)
-            }
-        }
-        .padding(.horizontal, Theme.horizontalPadding)
-        .padding(.vertical, Theme.blockPadding)
-    }
-}
-
-/// 지속 시간 칩 — 종전 서브메뉴와 같은 선택지. 진행 중인 지속시간은 endsAt만 남아
-/// 어느 칩을 골랐는지 알 수 없어(종전에도 체크하지 않았음) 무기한/끄기만 상태를 비춘다.
-private struct AwakeDurationGrid: View {
-    @ObservedObject var model: AppModel
-
-    private let options: [(title: String, minutes: Int?)] =
-        [("무기한", nil), ("30분", 30), ("1시간", 60), ("2시간", 120), ("4시간", 240)]
-
-    var body: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
-            spacing: 6
-        ) {
-            ForEach(options.indices, id: \.self) { index in
-                chip(options[index].title, selected: isSelected(options[index])) {
-                    model.enableAwake(minutes: options[index].minutes)
-                }
-            }
-            chip("끄기", selected: !model.awake.active) { model.disableAwake() }
-        }
-        .padding(.leading, 24)  // 아이콘 열만큼 들여쓰기
-        .padding(.vertical, 2)
-    }
-
-    private func isSelected(_ option: (title: String, minutes: Int?)) -> Bool {
-        option.minutes == nil && model.awake.active && model.awake.endsAt == nil
-    }
-
-    private func chip(
-        _ title: String, selected: Bool, action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(Theme.chipFont)
-                .foregroundStyle(selected ? Color.accentColor : Color.primary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 5)
-                .background(
-                    Capsule().fill(
-                        selected ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.05))
-                )
-                .overlay(
-                    Capsule().strokeBorder(
-                        selected ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1))
-                .contentShape(Capsule())
+            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help((usage.lastObservationText(at: now) ?? "아직 조회 전") + " · 눌러서 전체 한도 확인")
+    }
+    private func context(_ usage: ProviderUsage, _ window: ProviderUsage.WindowDisplay) -> String {
+        let group = usage.displayGroup(window.group).map { $0 == ProviderUsage.externalSharedGroupTitle ? "외부 모델" : $0 }
+        return [group, window.label].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
-/// 아이콘 + 제목 + 오른쪽 보조 요소 한 줄. action이 있으면 버튼으로 동작하며 호버
-/// 배경이 생기고, 없으면(컨트롤이 오른쪽에 있는 행) 그냥 정적 레이아웃이 된다.
-private struct PanelRow<Trailing: View>: View {
-    let icon: String
-    let title: String
-    let action: (() -> Void)?
-    @ViewBuilder let trailing: () -> Trailing
-
-    @State private var hovering = false
-
-    init(
-        icon: String, title: String, action: (() -> Void)? = nil,
-        @ViewBuilder trailing: @escaping () -> Trailing
-    ) {
-        self.icon = icon
-        self.title = title
-        self.action = action
-        self.trailing = trailing
-    }
-
+struct AwakeStatusView: View {
+    let state: AppModel.AwakeState
     var body: some View {
-        let row = HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
-            Text(title)
-                .font(Theme.body)
-            Spacer(minLength: 8)
-            trailing()
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .contentShape(Rectangle())
-
-        row
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(hovering && action != nil ? Color.primary.opacity(0.06) : Color.clear)
-            )
-            .onHover { hovering = $0 }
-            .wrapInButton(action: action)
-    }
-}
-
-extension View {
-    /// action이 있으면 버튼으로 감싼다 — PanelRow의 조건부 래핑 헬퍼.
-    @ViewBuilder
-    fileprivate func wrapInButton(action: (() -> Void)?) -> some View {
-        if let action {
-            Button(action: action) { self }.buttonStyle(.plain)
-        } else {
-            self
-        }
-    }
-}
-
-// MARK: - 설정 섹션
-
-private struct SettingsSection: View {
-    @ObservedObject var model: AppModel
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            PanelRow(
-                icon: "gearshape", title: "설정",
-                action: {
-                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        Group {
+            if state.active, let end = state.endsAt {
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    let minutes = max(0, Int(ceil(end.timeIntervalSince(context.date) / 60)))
+                    Text("\(minutes)분 · \(state.mode.title)").help("\(Theme.clockText(end))까지")
                 }
-            ) {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(expanded ? 180 : 0))
-            }
-            if expanded {
-                VStack(alignment: .leading, spacing: 2) {
-                    Toggle(
-                        "로그인 시 자동 실행",
-                        isOn: Binding(
-                            get: { model.loginItemEnabled },
-                            set: { _ in model.toggleLoginItem() })
-                    )
-                    .font(Theme.body)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-
-                    Toggle(
-                        "히스토리 선택 시 자동 붙여넣기",
-                        isOn: Binding(
-                            get: { model.autoPasteEnabled },
-                            set: { _ in model.toggleAutoPaste() })
-                    )
-                    .font(Theme.body)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-
-                    Button(role: .destructive, action: { model.clearHistory() }) {
-                        Text("히스토리 비우기 (핀 제외)")
-                            .font(Theme.body)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 7)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.leading, 24)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+            } else {
+                Text(state.active ? "무기한 · \(state.mode.title)" : "꺼짐")
             }
         }
-        .padding(.horizontal, Theme.horizontalPadding)
-        .padding(.vertical, Theme.blockPadding)
+        .font(Theme.caption).foregroundStyle(state.active ? Color.accentColor : Color.secondary)
     }
 }

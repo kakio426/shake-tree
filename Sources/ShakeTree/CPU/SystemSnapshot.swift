@@ -9,10 +9,16 @@ struct SystemSnapshot: Equatable, Sendable {
     var memTotalGB: Double
     var memCompressedGB: Double
     var swapUsedGB: Double
+    var swapAllocatedGB: Double = 0
     var diskFraction: Double
     var diskUsedGB: Double
     var diskTotalGB: Double
     var diskPurgeableGB: Double
+
+    var storage: StorageBreakdown {
+        StorageBreakdown(totalGB: diskTotalGB, occupiedGB: diskUsedGB,
+                         swapAllocatedGB: swapAllocatedGB, purgeableGB: diskPurgeableGB)
+    }
 
     static let empty = SystemSnapshot(
         cpuFraction: 0, cpuHistory: [], memHistory: [], memLevel: .normal,

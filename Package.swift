@@ -12,7 +12,8 @@ let package = Package(
         .testTarget(
             name: "ShakeTreeTests",
             dependencies: ["ShakeTree"],
-            path: "Tests/ShakeTreeTests"
+            path: "Tests/ShakeTreeTests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )

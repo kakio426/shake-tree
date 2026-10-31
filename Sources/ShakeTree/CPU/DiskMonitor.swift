@@ -1,7 +1,7 @@
 import Foundation
 
 struct DiskUsage: Sendable {
-    /// 정리 가능 공간을 제외한 실사용 비율 — Finder의 "사용 가능"과 같은 기준.
+    /// 정리 가능 영역도 포함하는 물리적 점유량. 스왑과 합계를 맞추는 기준이다.
     let usedFraction: Double  // 0...1
     let usedGB: Double
     let totalGB: Double
@@ -11,13 +11,11 @@ struct DiskUsage: Sendable {
 }
 
 /// 부팅 볼륨의 저장공간 사용량.
-/// Finder식 가용(volumeAvailableCapacityForImportantUsage, 정리 가능 포함)로 실사용을
-/// 계산하고, 순수 가용(volumeAvailableCapacity)과의 차이를 "정리 가능" 영역으로
-/// 분리해 함께 돌려준다 — 게이지에서 두 색으로 갈라 보여주기 위함.
-@MainActor
-final class DiskMonitor {
+/// 즉시 가용량으로 물리적 점유를 계산한다. 정리 가능 영역은 점유량 안에
+/// 포함되므로 게이지와 파일/스왑 합계에서 두 번 더하지 않는다.
+final class DiskMonitor: Sendable {
     func sample() -> DiskUsage {
-        let url = URL(fileURLWithPath: "/")
+        let url = FileManager.default.homeDirectoryForCurrentUser
         guard
             let values = try? url.resourceValues(forKeys: [
                 .volumeTotalCapacityKey,
@@ -31,11 +29,12 @@ final class DiskMonitor {
         }
 
         let totalBytes = Double(total)
-        let usedBytes = max(0, totalBytes - Double(important))
+        let available = values.volumeAvailableCapacity.map(Double.init) ?? Double(important)
+        let usedBytes = min(totalBytes, max(0, totalBytes - available))
 
         var purgeableBytes: Double = 0
         if let rawAvailable = values.volumeAvailableCapacity {
-            purgeableBytes = max(0, totalBytes - Double(rawAvailable) - usedBytes)
+            purgeableBytes = min(usedBytes, max(0, Double(important) - Double(rawAvailable)))
         }
 
         return DiskUsage(

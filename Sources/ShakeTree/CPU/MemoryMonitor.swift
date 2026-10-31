@@ -23,6 +23,12 @@ struct MemoryUsage: Sendable {
 /// 빼면 앱이 실제로 잡고 있는 메모리까지 빠진다. internal(익명) 기준으로 세면 이 문제가 없다.
 @MainActor
 final class MemoryMonitor {
+    private let host = MachHostPort()
+    private lazy var pageSize: UInt64 = {
+        var bytes: vm_size_t = 0
+        guard host_page_size(host.name, &bytes) == KERN_SUCCESS else { return UInt64(getpagesize()) }
+        return UInt64(bytes)
+    }()
     private let totalBytes: UInt64 = {
         var size: UInt64 = 0
         var len = MemoryLayout<UInt64>.size
@@ -31,15 +37,12 @@ final class MemoryMonitor {
     }()
 
     func sample() -> MemoryUsage {
-        var pageSize: vm_size_t = 0
-        host_page_size(mach_host_self(), &pageSize)
-
         var count = mach_msg_type_number_t(
             MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
         var stats = vm_statistics64_data_t()
         let result = withUnsafeMutablePointer(to: &stats) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+                host_statistics64(host.name, HOST_VM_INFO64, $0, &count)
             }
         }
         let totalGB = Double(totalBytes) / 1_000_000_000

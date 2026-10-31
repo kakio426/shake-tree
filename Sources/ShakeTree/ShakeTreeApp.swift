@@ -8,16 +8,18 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var animator: TreeAnimator!
-    private var statsTimer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var screenSleeping = false
     private var sessionInactive = false
 
-    private let cpuMonitor = CPUMonitor()
-    private let memoryMonitor = MemoryMonitor()
-    private let memoryPressureMonitor = MemoryPressureMonitor()
-    private let swapMonitor = SwapMonitor()
-    private let diskMonitor = DiskMonitor()
+    private let metrics = SystemMetricsService()
+    private let powerMonitor = PowerMonitor()
+    private var usageEnabled: Bool?
+    private var usageWasVisible = false
+    private var activeDetail: DetailPage?
+    private var detailVisible = false
+    private let settingsWindow = UtilityWindowController()
+    private let detailWindow = UtilityWindowController()
 
     private let keepAwake = KeepAwake()
     private let clipboardWatcher = ClipboardWatcher()
@@ -29,17 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var mainPanel = MainPanelController(model: model)
     private var hotKey: HotKey?
 
-    private var cpuHistory: [Double] = []
-    private var memHistory: [Double] = []
-    private let historyCapacity = 120  // 0.5초 간격 x 120 = 최근 1분
-    private var latestSwap: SwapUsage?
-    private var latestDisk: DiskUsage?
-    private var lastSwapSample = Date.distantPast
-    private var lastDiskSample = Date.distantPast
     private var isMainPanelVisible = false
-
-    private let swapSampleInterval: TimeInterval = 2
-    private let diskSampleInterval: TimeInterval = 60
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logBuildIdentity()
@@ -50,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         historyPanel.anchorButton = button
 
         wireModel()
+        powerMonitor.start()
+        keepAwake.configure(power: powerMonitor.snapshot, settings: model.resources)
+        keepAwake.restoreAfterInterruption()
         refreshKeepAwakeState()
 
         // 좌클릭 = 패널 열기/닫기, 우클릭(또는 control-클릭) = 잠들지 않기 토글.
@@ -58,10 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.target = self
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
-        clipboardWatcher.start()
         // both 모드에서만 파일 감시가 필요하다 (clipboardOnly는 macOS가 직접 처리).
         if ScreenshotMode.current == .both { screenshotWatcher.start() }
-        usageProvider.start()
         hotKey = HotKey { [historyPanel] in historyPanel.toggle() }
         observeWorkspacePowerState()
 
@@ -79,31 +72,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(handleToggleAwake),
             name: Notification.Name("dev.yubyeongju.shaketree.toggle-awake"), object: nil,
             suspensionBehavior: .deliverImmediately)
+        center.addObserver(self, selector: #selector(handleRestoreAwake(_:)),
+            name: Notification.Name("dev.yubyeongju.shaketree.restore-awake"), object: nil,
+            suspensionBehavior: .deliverImmediately)
+        center.addObserver(self, selector: #selector(handleQuit),
+            name: Notification.Name("dev.yubyeongju.shaketree.quit"), object: nil,
+            suspensionBehavior: .deliverImmediately)
 
-        memoryPressureMonitor.start()
-        _ = cpuMonitor.sample()  // 첫 샘플은 델타 기준점만 잡음
-        // 0.5초마다 샘플링 — 나무 흔들림이 CPU 변화를 촘촘하고 민감하게 따라가도록.
-        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.refreshSystemStats()
-                self?.clipboardWatcher.poll()
-            }
-        }
-        // CPU/클립보드처럼 비슷한 주기의 타이머가 한꺼번에 깨어날 수 있게 여유를 준다.
-        timer.tolerance = 0.08
-        RunLoop.main.add(timer, forMode: .common)
-        statsTimer = timer
+        configureResources()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         mainPanel.close()
+        settingsWindow.close()
+        detailWindow.close()
         historyPanel.close()
-        statsTimer?.invalidate()
-        statsTimer = nil
+        metrics.stop()
+        powerMonitor.stop()
         clipboardWatcher.stop()
         screenshotWatcher.stop()
         usageProvider.stop()
-        memoryPressureMonitor.stop()
         keepAwake.onChange = nil
         keepAwake.disable()
         animator?.stop()
@@ -120,16 +108,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             start ? screenshotWatcher.start() : screenshotWatcher.stop()
         }
         model.showHistoryPanel = { [historyPanel] in historyPanel.show() }
+        model.refreshUsage = { [weak self] in self?.usageProvider.refresh() }
+        model.cancelUsageRefresh = { [weak self] in self?.usageProvider.cancelRefresh() }
+        model.refreshUsageProvider = { [weak self] provider in self?.usageProvider.refresh(providers: [provider]) }
 
         mainPanel.onVisibilityChange = { [weak self] visible in
             guard let self else { return }
             self.isMainPanelVisible = visible
-            if visible {
-                // 열기 직전에 최신 스냅샷을 한 번 밀어 넣는다. 디스크는 최근 15초 안에
-                // 읽었다면 캐시를 써서 빠른 재클릭이 비싼 조회를 반복하지 않게 한다.
-                self.refreshSystemStats(forcePublish: true, diskMaxAge: 15)
-                self.usageProvider.refreshIfStale(maxAge: 300)
-            }
+            self.configureResources()
         }
 
         // 사용량 조회 결과가 바뀔 때마다 모델로 밀어 넣는다 (→ 패널 자동 갱신)
@@ -137,10 +123,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         usageProvider.onUpdate = { [weak self] in
             guard let self else { return }
             self.model.updateUsage(
-                self.usageProvider.usages, statusText: self.usageProvider.statusText)
+                self.usageProvider.usages, statusText: self.usageProvider.statusText,
+                isRefreshing: self.usageProvider.isRefreshing,
+                progress: self.usageProvider.progress)
         }
 
         keepAwake.onChange = { [weak self] in self?.refreshKeepAwakeState() }
+        metrics.onSnapshot = { [weak self] in self?.model.updateSystem($0) }
+        metrics.onIcon = { [weak self] cpu, level in
+            self?.animator.update(cpuUsage: cpu)
+            self?.animator.setWarningLevel(level)
+        }
+        powerMonitor.onChange = { [weak self] power in
+            guard let self else { return }
+            self.model.updatePower(power)
+            self.keepAwake.configure(power: power, settings: self.model.resources)
+            self.configureResources()
+        }
+        model.onResourcesChange = { [weak self] in
+            guard let self else { return }
+            self.keepAwake.configure(power: self.powerMonitor.snapshot, settings: self.model.resources)
+            self.configureResources()
+        }
+        model.showSettingsWindow = { [weak self] page in
+            guard let self else { return }
+            self.mainPanel.close()
+            self.settingsWindow.show(title: "Shake Tree 설정", size: NSSize(width: 480, height: 420),
+                                     content: AnyView(SettingsWindowView(model: self.model, page: page)))
+        }
+        model.showDetailWindow = { [weak self] page in
+            guard let self else { return }
+            self.activeDetail = page
+            self.detailVisible = true
+            self.configureResources()
+            self.mainPanel.close()
+            let title = page.provider.flatMap { id in self.model.usage.usages.first { $0.provider == id }?.displayName } ?? "시스템"
+            self.detailWindow.show(title: "\(title) · Shake Tree", size: NSSize(width: 400, height: 300),
+                                   content: AnyView(DetailWindowView(model: self.model, page: page)))
+        }
+        detailWindow.onClose = { [weak self] in
+            self?.activeDetail = nil
+            self?.detailVisible = false
+            self?.configureResources()
+        }
+        detailWindow.onVisibilityChange = { [weak self] visible in
+            self?.detailVisible = visible
+            self?.configureResources()
+        }
     }
 
     /// KeepAwake 상태가 바지면 아이콘 점과 모델(→패널 표시)을 함께 갱신한다.
@@ -153,18 +182,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         historyPanel.show()
     }
 
-    /// 스크립트용 — 패널을 열고 잠시 뒤 자동으로 닫는다 (종전 메뉴 취소 동작과 동일).
+    /// 스크립트용 — 사용자가 열었을 때와 같은 패널을 유지해 실제 표시를 검수한다.
     @objc private func handleShowMenu() {
         mainPanel.show()
-        let timer = Timer(timeInterval: 3.0, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.mainPanel.close() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
     }
 
     @objc private func handleToggleAwake() {
         keepAwake.toggle()
     }
+
+    @objc private func handleRestoreAwake(_ notification: Notification) {
+        guard let remaining = notification.userInfo?["remainingSeconds"] as? Double,
+              remaining.isFinite, remaining != 0 else { return }
+        keepAwake.enable(duration: remaining < 0 ? nil : min(remaining, 86400))
+    }
+    @objc private func handleQuit() { NSApp.terminate(nil) }
 
     /// 좌클릭=패널, 우클릭/control-클릭=잠들지 않기 토글
     @objc private func statusItemClicked() {
@@ -179,75 +211,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func refreshSystemStats(
-        forcePublish: Bool = false,
-        diskMaxAge: TimeInterval? = nil
-    ) {
-        let cpu = cpuMonitor.sample()
-        animator.update(cpuUsage: cpu)
-        let mem = memoryMonitor.sample()
-
-        cpuHistory.append(cpu)
-        if cpuHistory.count > historyCapacity { cpuHistory.removeFirst() }
-        memHistory.append(mem.usedFraction)
-        if memHistory.count > historyCapacity { memHistory.removeFirst() }
-
-        // 평소엔 흑백 나무 그대로, CPU/RAM 중 하나라도 경고 수준이면 그때만 색을 입힌다.
-        // RAM은 사용량 %가 아니라 커널의 실제 메모리 압박 신호를 기준으로 삼는다 —
-        // macOS가 남는 RAM을 파일 캐시로 항상 꽉 채우는 게 정상이라 %만 보면 늘 빨간색이 된다.
-        let level = SystemThresholds.worse(
-            SystemThresholds.cpuLevel(cpu), memoryPressureMonitor.level)
-        animator.setWarningLevel(level)
-
-        let now = Date()
-        let needsPanelStats = isMainPanelVisible || forcePublish
-        if needsPanelStats {
-            if latestSwap == nil || now.timeIntervalSince(lastSwapSample) >= swapSampleInterval {
-                latestSwap = swapMonitor.sample()
-                lastSwapSample = now
-            }
-
-            let allowedDiskAge = diskMaxAge ?? diskSampleInterval
-            if latestDisk == nil || now.timeIntervalSince(lastDiskSample) >= allowedDiskAge {
-                latestDisk = diskMonitor.sample()
-                lastDiskSample = now
-            }
+    private func configureResources() {
+        let suspended = screenSleeping || sessionInactive
+        let settings = model.resources
+        let systemVisible = isMainPanelVisible || (detailVisible && activeDetail?.isSystem == true)
+        let usageVisible = (isMainPanelVisible || (detailVisible && activeDetail?.provider != nil)) && !suspended && settings.usageEnabled
+        let becameVisible = usageVisible && !usageWasVisible
+        usageWasVisible = usageVisible
+        let policy = ResourcePolicy(settings: settings, power: powerMonitor.snapshot,
+                                    visible: systemVisible, suspended: suspended)
+        metrics.configure(policy: policy, visible: systemVisible)
+        clipboardWatcher.configurePolling(enabled: settings.clipboardEnabled, suspended: suspended)
+        animator?.configure(enabled: policy.animationEnabled, frameRate: policy.frameRate)
+        if !settings.systemEnabled { animator?.setWarningLevel(.normal) }
+        // Covered inspectors stop scheduled refreshes but finish the current request once.
+        // Closing all usage surfaces, locking or disabling the module cancels immediately.
+        let hasUsageSurface = isMainPanelVisible || activeDetail?.provider != nil
+        usageProvider.setPanelVisible(usageVisible, cancelInFlight: !hasUsageSurface || suspended || !settings.usageEnabled)
+        if usageEnabled != settings.usageEnabled {
+            usageEnabled = settings.usageEnabled
+            settings.usageEnabled ? usageProvider.start() : usageProvider.stop()
         }
-
-        guard needsPanelStats else { return }
-        publishSystemSnapshot(cpu: cpu, memory: mem)
+        if becameVisible {
+            usageProvider.refreshIfStale(maxAge: 300, providers: isMainPanelVisible ? nil : activeDetail?.provider.map { [$0] })
+        }
     }
 
-    private func publishSystemSnapshot(cpu: Double, memory: MemoryUsage) {
-        let swap = latestSwap
-        let disk = latestDisk
-        model.updateSystem(
-            SystemSnapshot(
-                cpuFraction: cpu,
-                cpuHistory: cpuHistory,
-                memHistory: memHistory,
-                memLevel: memoryPressureMonitor.level,
-                memUsedGB: memory.usedGB,
-                memTotalGB: memory.totalGB,
-                memCompressedGB: memory.compressedGB,
-                swapUsedGB: swap?.usedGB ?? 0,
-                diskFraction: disk?.usedFraction ?? 0,
-                diskUsedGB: disk?.usedGB ?? 0,
-                diskTotalGB: disk?.totalGB ?? 0,
-                diskPurgeableGB: disk?.purgeableGB ?? 0))
-    }
-
-    /// 메뉴바가 보이지 않는 화면 잠자기/잠금 동안 아이콘 애니메이션만 멈춘다.
-    /// 클립보드 감시는 백그라운드 복사를 놓치지 않도록 계속 유지한다.
+    /// Screen sleep/lock stops sampling, animation and clipboard wakeups.
+    /// The clipboard's last changeCount survives so the latest copy is read on wake.
     private func observeWorkspacePowerState() {
         let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(center.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.keepAwake.reconcileAfterWake() }
+        })
         workspaceObservers.append(
             center.addObserver(
                 forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.screenSleeping = true
-                    self?.updateAnimationSuspension()
+                    self?.configureResources()
                 }
             })
         workspaceObservers.append(
@@ -256,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.screenSleeping = false
-                    self?.updateAnimationSuspension()
+                    self?.configureResources()
                 }
             })
         workspaceObservers.append(
@@ -266,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.sessionInactive = true
-                    self?.updateAnimationSuspension()
+                    self?.configureResources()
                 }
             })
         workspaceObservers.append(
@@ -276,13 +281,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.sessionInactive = false
-                    self?.updateAnimationSuspension()
+                    self?.configureResources()
                 }
             })
-    }
-
-    private func updateAnimationSuspension() {
-        animator?.setSuspended(screenSleeping || sessionInactive)
     }
 
     private func logBuildIdentity() {

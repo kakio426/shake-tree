@@ -4,7 +4,9 @@ import Foundation
 /// host_statistics의 CPU 틱 델타로 전체 CPU 사용률(0.0~1.0)을 계산한다.
 @MainActor
 final class CPUMonitor {
+    private let host = MachHostPort()
     private var previousTicks: (user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)?
+    func reset() { previousTicks = nil }
 
     func sample() -> Double {
         var size = mach_msg_type_number_t(
@@ -12,7 +14,7 @@ final class CPUMonitor {
         var info = host_cpu_load_info()
         let result = withUnsafeMutablePointer(to: &info) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) {
-                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &size)
+                host_statistics(host.name, HOST_CPU_LOAD_INFO, $0, &size)
             }
         }
         guard result == KERN_SUCCESS else { return 0 }

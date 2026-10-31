@@ -31,6 +31,14 @@ final class TreeAnimator {
     private var warningLevel: UsageLevel = .normal
     private var suspended = false
     private var stopped = false
+    private var frameRate: Float = 12
+
+    func configure(enabled: Bool, frameRate: Float) {
+        let changed = self.frameRate != frameRate
+        self.frameRate = frameRate
+        setSuspended(!enabled)
+        if changed && !suspended { installCurrentAnimation() }
+    }
 
     private static let bucketCount = 10
     private static let sampleCount = 24
@@ -220,7 +228,7 @@ final class TreeAnimator {
         animation.duration = duration
         animation.repeatCount = .infinity
         animation.preferredFrameRateRange = CAFrameRateRange(
-            minimum: 15, maximum: 30, preferred: 24)
+            minimum: min(2, frameRate), maximum: frameRate, preferred: frameRate)
         return animation
     }
 

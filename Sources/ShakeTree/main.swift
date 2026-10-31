@@ -20,9 +20,11 @@ if let iconPath = ProcessInfo.processInfo.environment["SHAKETREE_APPICON"] {
 
 // 외부 트리거: `SHAKETREE_POST=show-panel ShakeTree` 로 실행 중인 앱에 패널 열기 요청
 if let post = ProcessInfo.processInfo.environment["SHAKETREE_POST"] {
+    let seconds = ProcessInfo.processInfo.environment["SHAKETREE_RESTORE_SECONDS"].flatMap(Double.init)
+    let info: [AnyHashable: Any]? = seconds.map { ["remainingSeconds": $0] }
     DistributedNotificationCenter.default().postNotificationName(
         Notification.Name("dev.yubyeongju.shaketree.\(post)"), object: nil,
-        userInfo: nil, deliverImmediately: true)
+        userInfo: info, deliverImmediately: true)
     // 전달이 데몬으로 플러시되도록 잠깐 런루프를 돌린 뒤 종료
     RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     exit(0)
