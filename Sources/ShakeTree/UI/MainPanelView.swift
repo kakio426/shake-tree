@@ -130,11 +130,26 @@ private struct CompactSystemView: View {
 
 struct CompactUsageView: View {
     @ObservedObject var model: AppModel
+    struct SummarySnapshot: Equatable {
+        let window: ProviderUsage.WindowDisplay
+        let isCurrent: Bool
+    }
     static func summaryWindow(_ usage: ProviderUsage, at now: Date) -> ProviderUsage.WindowDisplay? {
         usage.windows.filter { usage.canShow($0, at: now) }.max { $0.usedPercent < $1.usedPercent }
     }
+    static func summarySnapshot(_ usage: ProviderUsage, at now: Date) -> SummarySnapshot? {
+        if usage.issue == nil, let current = summaryWindow(usage, at: now) {
+            return SummarySnapshot(window: current, isCurrent: true)
+        }
+        guard usage.fetchedAt != nil else { return nil }
+        let windows = usage.windows.filter { $0.resetsAt.map { $0 > now } ?? true }
+        guard let previous = (windows.isEmpty ? usage.windows : windows).max(by: { $0.usedPercent < $1.usedPercent }) else {
+            return nil
+        }
+        return SummarySnapshot(window: previous, isCurrent: false)
+    }
     var body: some View {
-        TimelineView(.periodic(from: .now, by: model.usage.isRefreshing ? 1 : 60)) { context in
+        TimelineView(.periodic(from: .now, by: model.usage.isRefreshing ? 15 : 60)) { context in
             VStack(alignment: .leading, spacing: 1) {
                 HStack {
                     Text("AI 남은 한도").font(Theme.captionStrong).foregroundStyle(.secondary)
@@ -159,7 +174,7 @@ struct CompactUsageView: View {
         }
     }
     private func summaryCard(_ usage: ProviderUsage, now: Date) -> some View {
-        let window = Self.summaryWindow(usage, at: now)
+        let snapshot = Self.summarySnapshot(usage, at: now)
         return Button { model.openDetails(.usage(usage.provider)) } label: {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 4) {
@@ -170,18 +185,22 @@ struct CompactUsageView: View {
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right").font(.system(size: 7)).foregroundStyle(.tertiary)
                 }
-                if let window {
+                if let snapshot {
+                    let window = snapshot.window
                     let remaining = 100 - window.usedPercent
+                    let color = snapshot.isCurrent ? Theme.gaugeColor(remainingPercent: remaining) : Color.secondary
                     HStack(spacing: 3) {
-                        Text(context(usage, window)).font(Theme.micro).foregroundStyle(.secondary)
+                        Text((snapshot.isCurrent ? "" : "이전 값 · ") + context(usage, window))
+                            .font(Theme.micro).foregroundStyle(.secondary)
                             .lineLimit(1).minimumScaleFactor(0.8)
                         Spacer(minLength: 0)
                         Text(Theme.remainingText(remaining)).font(Theme.captionStrong)
-                            .foregroundStyle(Theme.gaugeColor(remainingPercent: remaining)).fixedSize()
+                            .foregroundStyle(color).fixedSize()
                     }
-                    ThinProgressBar(value: remaining / 100, color: Theme.gaugeColor(remainingPercent: remaining)).frame(height: 4)
+                    ThinProgressBar(value: remaining / 100, color: color)
+                        .opacity(snapshot.isCurrent ? 1 : 0.45).frame(height: 4)
                 } else {
-                    Text(usage.refreshState.isPending ? "조회 중" : "재조회 필요")
+                    Text(usage.refreshState.isPending ? "백그라운드 확인 중" : "재조회 필요")
                         .font(Theme.caption).foregroundStyle(.secondary)
                     Capsule().fill(Color.secondary.opacity(0.15)).frame(height: 4)
                 }
@@ -191,7 +210,7 @@ struct CompactUsageView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help((usage.lastObservationText(at: now) ?? "아직 조회 전") + " · 눌러서 전체 한도 확인")
+        .help((usage.lastObservationText(at: now) ?? "아직 조회 전") + " · 이전 값은 회색으로 표시 · 눌러서 전체 한도 확인")
     }
     private func context(_ usage: ProviderUsage, _ window: ProviderUsage.WindowDisplay) -> String {
         let group = usage.displayGroup(window.group).map { $0 == ProviderUsage.externalSharedGroupTitle ? "외부 모델" : $0 }

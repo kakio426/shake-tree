@@ -16,7 +16,7 @@ swift build -c "$CONFIG" --jobs 2
 
 BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
 BIN="$BIN_DIR/ShakeTree"
-APP="dist/Shake Tree.app"
+APP="${SHAKETREE_APP_OUTPUT:-dist/Shake Tree.app}"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"

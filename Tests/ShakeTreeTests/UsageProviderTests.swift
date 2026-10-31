@@ -179,6 +179,41 @@ final class UsageProviderTests: XCTestCase {
         XCTAssertEqual(after.total, 5)
     }
 
+    func testCachedQuotaAppearsImmediatelyAndOneRefreshFinishesAfterPanelCloses() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("usage-cache-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let observed = Date().addingTimeInterval(-600)
+        let cachedWindow = ProviderUsage.WindowDisplay(id: "weekly", label: "1주일", group: nil,
+            usedPercent: 81, resetsAt: Date().addingTimeInterval(86400), resetDescription: nil)
+        let cached = ProviderUsage(provider: "codex", fetchedAt: observed, windows: [cachedWindow])
+        let cache = UsageCacheFixture(usages: [cached])
+        try JSONEncoder().encode(cache).write(to: url)
+
+        let gate = UsageResultGate()
+        let provider = UsageProvider(cacheURL: url, cliPath: "fixture") { name, _ in
+            await gate.wait()
+            return UsageFetchResult(provider: name, usage: ProviderUsage(provider: name, fetchedAt: Date(), windows: [
+                .init(id: "weekly", label: "1주일", group: nil, usedPercent: 23,
+                      resetsAt: Date().addingTimeInterval(86400), resetDescription: nil)
+            ]))
+        }
+        defer { provider.stop() }
+
+        XCTAssertEqual(provider.usages.first { $0.provider == "codex" }?.fetchedAt, observed)
+        XCTAssertFalse(provider.isRefreshing, "The cache must be ready before any CLI request starts")
+        provider.refreshIfStale(maxAge: 300, providers: ["codex"])
+        try await Task.sleep(for: .milliseconds(30))
+        provider.setPanelVisible(false, cancelInFlight: false)
+        XCTAssertTrue(provider.isRefreshing, "Closing the panel must not cancel the one active refresh round")
+
+        await gate.release()
+        let deadline = Date().addingTimeInterval(2)
+        while provider.isRefreshing && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(provider.isRefreshing)
+        XCTAssertEqual(provider.usages.first { $0.provider == "codex" }?.windows.first?.usedPercent, 23)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "The completed round must remain cached for the next open")
+    }
+
     func testPerProviderQueueAndProgressDoNotMakeOtherCardsAppearStuck() async throws {
         let provider = UsageProvider(cacheURL: nil, cliPath: "fixture") { name, _ in
             try? await Task.sleep(for: .milliseconds(name == "claude" ? 180 : 45))
@@ -241,7 +276,7 @@ final class UsageProviderTests: XCTestCase {
         var usage = try XCTUnwrap(UsageProvider.decode(fixture(), provider: "antigravity", now: now).usage)
         usage.refreshState = .loading(now.addingTimeInterval(10))
         XCTAssertFalse(usage.hasCurrentValues(at: now.addingTimeInterval(86400)))
-        XCTAssertEqual(usage.refreshState.text(at: now.addingTimeInterval(25)), "조회 중 · 15초")
+        XCTAssertEqual(usage.refreshState.text(at: now.addingTimeInterval(25)), "갱신 중")
         let data = try JSONEncoder().encode(usage)
         let decoded = try JSONDecoder().decode(ProviderUsage.self, from: data)
         XCTAssertEqual(decoded.refreshState, .idle)
@@ -263,4 +298,9 @@ private actor FetchCounter {
     func enter() { active += 1; total += 1; maximum = max(maximum, active) }
     func leave() { active -= 1 }
     func values() -> (total: Int, maximum: Int) { (total, maximum) }
+}
+
+private struct UsageCacheFixture: Encodable {
+    let version = 2
+    let usages: [ProviderUsage]
 }

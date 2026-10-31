@@ -224,10 +224,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboardWatcher.configurePolling(enabled: settings.clipboardEnabled, suspended: suspended)
         animator?.configure(enabled: policy.animationEnabled, frameRate: policy.frameRate)
         if !settings.systemEnabled { animator?.setWarningLevel(.normal) }
-        // Covered inspectors stop scheduled refreshes but finish the current request once.
-        // Closing all usage surfaces, locking or disabling the module cancels immediately.
-        let hasUsageSurface = isMainPanelVisible || activeDetail?.provider != nil
-        usageProvider.setPanelVisible(usageVisible, cancelInFlight: !hasUsageSurface || suspended || !settings.usageEnabled)
+        // Stop scheduling while hidden, but let one already-started bounded round finish
+        // and populate the cache. Locking the screen or disabling the module still cancels.
+        usageProvider.setPanelVisible(usageVisible, cancelInFlight: suspended || !settings.usageEnabled)
         if usageEnabled != settings.usageEnabled {
             usageEnabled = settings.usageEnabled
             settings.usageEnabled ? usageProvider.start() : usageProvider.stop()

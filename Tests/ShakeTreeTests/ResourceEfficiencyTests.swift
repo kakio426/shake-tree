@@ -117,6 +117,13 @@ final class ResourceEfficiencyTests: XCTestCase {
         var stale = usages[2]
         stale.fetchedAt = now.addingTimeInterval(-7200)
         XCTAssertNil(CompactUsageView.summaryWindow(stale, at: now))
+        let previous = try XCTUnwrap(CompactUsageView.summarySnapshot(stale, at: now))
+        XCTAssertFalse(previous.isCurrent)
+        XCTAssertEqual(previous.window.id, "weekly", "A cached quota should stay visible when clearly marked as previous")
+        var failed = usages[2]
+        failed.issue = "조회 실패"
+        XCTAssertFalse(try XCTUnwrap(CompactUsageView.summarySnapshot(failed, at: now)).isCurrent,
+                       "A failed refresh must not make its last successful quota look current")
         let model = AppModel(keepAwake: KeepAwake(defaults: nil), defaults: nil)
         model.updateUsage(usages, statusText: "확인 완료")
         var system = SystemSnapshot.empty

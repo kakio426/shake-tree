@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TARGET="/Applications/Shake Tree.app"
-SOURCE="dist/Shake Tree.app"
+SOURCE="${SHAKETREE_APP_OUTPUT:-dist/Shake Tree.app}"
 
 scripts/build-app.sh release
 

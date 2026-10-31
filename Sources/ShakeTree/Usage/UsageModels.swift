@@ -11,11 +11,11 @@ enum UsageRefreshState: Equatable, Sendable {
     case queued
     case loading(Date)
     var isPending: Bool { self != .idle }
-    func text(at now: Date) -> String? {
+    func text(at _: Date) -> String? {
         switch self {
         case .idle: nil
-        case .queued: "조회 대기"
-        case .loading(let started): "조회 중 · \(max(0, Int(now.timeIntervalSince(started))))초"
+        case .queued: "갱신 대기"
+        case .loading(_): "갱신 중"
         }
     }
 }
@@ -24,8 +24,8 @@ struct UsageRefreshProgress: Equatable, Sendable {
     let startedAt: Date
     let total: Int
     let completed: Int
-    func text(at now: Date) -> String {
-        "\(completed)/\(total)개 확인 · \(max(0, Int(now.timeIntervalSince(startedAt))))초"
+    func text(at _: Date) -> String {
+        "백그라운드 갱신 · \(completed)/\(total)"
     }
 }
 

@@ -23,7 +23,7 @@ struct UsageGridView: View, Equatable {
         return stride(from: 0, to: compact.count, by: 2).map { Array(compact[$0..<min($0 + 2, compact.count)]) }
     }
     var body: some View {
-        TimelineView(.periodic(from: .now, by: isRefreshing ? 1 : 30)) { context in
+        TimelineView(.periodic(from: .now, by: 30)) { context in
             VStack(alignment: .leading, spacing: 12) {
               if singleColumn {
                 ForEach(Self.visibleUsages(usages)) { usage in cell(usage, now: context.date) }
