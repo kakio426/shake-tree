@@ -3,9 +3,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+source scripts/app-paths.sh
 
 TARGET="/Applications/Shake Tree.app"
-SOURCE="${SHAKETREE_APP_OUTPUT:-dist/Shake Tree.app}"
+SOURCE="$SHAKETREE_BUILD_APP_OUTPUT"
 
 scripts/build-app.sh release
 
@@ -44,8 +45,10 @@ fi
 # 기존 앱을 바로 지우지 않고 같은 볼륨의 임시 폴더에 백업한다. 모든 검증이 끝난
 # 뒤에만 임시 폴더를 삭제하므로 중간 실패 시 previous.app으로 복구할 수 있다.
 STAGE_DIR="$(mktemp -d /Applications/.shaketree-install.XXXXXX)"
-STAGED_APP="$STAGE_DIR/Shake Tree.app"
-BACKUP_APP="$STAGE_DIR/previous.app"
+STAGE_BUNDLES="$STAGE_DIR/staging.noindex"
+mkdir -p "$STAGE_BUNDLES"
+STAGED_APP="$STAGE_BUNDLES/Shake Tree.app"
+BACKUP_APP="$STAGE_BUNDLES/previous.app"
 
 /usr/bin/ditto "$SOURCE" "$STAGED_APP"
 codesign --verify --strict --verbose=2 "$STAGED_APP"
@@ -119,6 +122,10 @@ fi
 
 # 새 앱과 실행 경로까지 확인된 뒤에만 이전 번들을 제거한다.
 rm -rf "$STAGE_DIR"
+# 기본 빌드는 설치가 끝나면 남기지 않는다. 명시적으로 지정한 출력은 보존한다.
+if [[ -z "${SHAKETREE_APP_OUTPUT:-}" ]]; then
+    rm -rf -- "$SOURCE"
+fi
 echo "installed & launched $TARGET (pid $APP_PID, sha256 $INSTALLED_HASH)"
 if (( WAS_AWAKE )); then
     echo "restored Keep Awake"

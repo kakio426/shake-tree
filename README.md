@@ -41,10 +41,14 @@ RunCat + CodexBar + Maccy + Amphetamine을 하나로 합친 개인용 macOS 메�
 
 ```sh
 scripts/install.sh    # release 빌드 → "/Applications/Shake Tree.app" 설치 + 실행
-scripts/build-app.sh  # "dist/Shake Tree.app" 만 빌드
+scripts/build-app.sh  # 검색에 표시되지 않는 .build/ShakeTreeBuild.noindex에 앱 빌드
 scripts/build-icon.sh # 앱 아이콘(Resources/AppIcon.icns) 재생성 — 디자인 바꿀 때만 실행
 swift build           # 개발용 빌드
 ```
+
+빌드·설치 중 생성한 앱은 `.noindex` 작업 폴더에 두므로 macOS 앱 검색에 중복으로 나타나지
+않습니다. 설치가 정상 완료되면 기본 빌드 사본도 정리합니다. `SHAKETREE_APP_OUTPUT`으로 빌드
+경로를 직접 지정할 때도 `.noindex` 폴더 안의 `.app` 경로를 사용하세요.
 
 의존성은 Xcode 커맨드라인 툴체인뿐입니다. **다른 앱을 따로 설치할 필요가 없습니다** — Codex/Claude
 사용량 조회에 쓰는 CLI(`vendor/codexbar-cli`, [steipete/CodexBar](https://github.com/steipete/CodexBar)

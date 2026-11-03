@@ -3,6 +3,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+source scripts/app-paths.sh
 CONFIG="${1:-release}"
 VERSION="${SHAKETREE_VERSION:-0.4.1}"
 BUILD_NUMBER="${SHAKETREE_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
@@ -12,13 +13,26 @@ if [[ -n "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]]; th
 fi
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+# 빌드 출력은 검색 제외 폴더에만 만들고 실제 설치본은 절대 덮어쓰지 않는다.
+APP="$SHAKETREE_BUILD_APP_OUTPUT"
+python3 -B - "$APP" <<'PY'
+import sys
+from pathlib import Path
+
+output = Path(sys.argv[1]).resolve()
+installed = Path('/Applications/Shake Tree.app').resolve()
+if output.suffix != '.app' or output == installed or output in installed.parents or installed in output.parents:
+    raise SystemExit('error: 빌드 출력은 설치된 앱과 분리된 .app 경로여야 합니다')
+if not any(parent.name.endswith('.noindex') for parent in output.parents):
+    raise SystemExit('error: 빌드 출력은 Spotlight 검색 제외를 위해 .noindex 폴더 안에 있어야 합니다')
+PY
+
 swift build -c "$CONFIG" --jobs 2
 
 BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
 BIN="$BIN_DIR/ShakeTree"
-APP="${SHAKETREE_APP_OUTPUT:-dist/Shake Tree.app}"
 
-rm -rf "$APP"
+rm -rf -- "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp "$BIN" "$APP/Contents/MacOS/ShakeTree"
 cp Resources/lid-awake-guard.sh "$APP/Contents/Resources/lid-awake-guard.sh"
