@@ -8,6 +8,7 @@ struct ResourceSettings: Equatable, Sendable {
     var animationEnabled = true
     var lowBatteryProtection = true
     var restoreInterruptedAwake = true
+    var lidAwakeEnabled = true
 
     init(defaults: UserDefaults? = nil) {
         guard let defaults else { return }
@@ -19,7 +20,7 @@ struct ResourceSettings: Equatable, Sendable {
         \.economy: "resourceEconomy", \.systemEnabled: "systemMonitoringEnabled",
         \.clipboardEnabled: "clipboardMonitoringEnabled", \.usageEnabled: "usageMonitoringEnabled",
         \.animationEnabled: "treeAnimationEnabled", \.lowBatteryProtection: "awakeLowBatteryProtection",
-        \.restoreInterruptedAwake: "restoreInterruptedAwake",
+        \.restoreInterruptedAwake: "restoreInterruptedAwake", \.lidAwakeEnabled: "awakeLidEnabled",
     ] }
     func save(to defaults: UserDefaults) {
         for (path, key) in Self.keys { defaults.set(self[keyPath: path], forKey: key) }
@@ -31,6 +32,7 @@ struct PowerSnapshot: Equatable, Sendable {
     var batteryPercent: Int?
     var lowPower = false
     var thermalLimited = false
+    var thermalCritical = false
     var batteryIsLow: Bool { onBattery && batteryPercent.map { $0 <= 20 } == true }
 }
 

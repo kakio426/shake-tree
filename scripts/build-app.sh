@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 CONFIG="${1:-release}"
-VERSION="${SHAKETREE_VERSION:-0.4.0}"
+VERSION="${SHAKETREE_VERSION:-0.4.1}"
 BUILD_NUMBER="${SHAKETREE_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 GIT_REVISION="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 if [[ -n "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
@@ -21,6 +21,7 @@ APP="${SHAKETREE_APP_OUTPUT:-dist/Shake Tree.app}"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp "$BIN" "$APP/Contents/MacOS/ShakeTree"
+cp Resources/lid-awake-guard.sh "$APP/Contents/Resources/lid-awake-guard.sh"
 
 # Codex/Claude 사용량 조회 CLI를 함께 번들 (CodexBar 앱 없이 동작).
 # vendor/codexbar-cli 는 CodexBar.app(MIT)의 Helpers/CodexBarCLI 를 복사해 둔 것.

@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let detailWindow = UtilityWindowController()
 
     private let keepAwake = KeepAwake()
+    private let lidAwake = LidAwakeController()
     private let clipboardWatcher = ClipboardWatcher()
     private let screenshotWatcher = ScreenshotWatcher()
     private let usageProvider = UsageProvider()
@@ -46,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keepAwake.configure(power: powerMonitor.snapshot, settings: model.resources)
         keepAwake.restoreAfterInterruption()
         refreshKeepAwakeState()
+        if !keepAwake.isActive { lidAwake.recoverIfNeeded() }
 
         // 좌클릭 = 패널 열기/닫기, 우클릭(또는 control-클릭) = 잠들지 않기 토글.
         // 그래서 statusItem.menu 를 고정하지 않고 버튼 액션으로 직접 처리한다.
@@ -94,6 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         usageProvider.stop()
         keepAwake.onChange = nil
         keepAwake.disable()
+        lidAwake.onChange = nil
+        lidAwake.onExpired = nil
+        lidAwake.configure(enabled: false, endsAt: nil)
         animator?.stop()
 
         let workspaceCenter = NSWorkspace.shared.notificationCenter
@@ -129,6 +134,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         keepAwake.onChange = { [weak self] in self?.refreshKeepAwakeState() }
+        lidAwake.onChange = { [weak self] in self?.refreshKeepAwakeState() }
+        lidAwake.onExpired = { [weak self] in self?.keepAwake.reconcileAfterWake() }
         metrics.onSnapshot = { [weak self] in self?.model.updateSystem($0) }
         metrics.onIcon = { [weak self] cpu, level in
             self?.animator.update(cpuUsage: cpu)
@@ -138,11 +145,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.model.updatePower(power)
             self.keepAwake.configure(power: power, settings: self.model.resources)
+            self.lidAwake.recheckAfterPowerChange()
             self.configureResources()
         }
         model.onResourcesChange = { [weak self] in
             guard let self else { return }
             self.keepAwake.configure(power: self.powerMonitor.snapshot, settings: self.model.resources)
+            self.refreshKeepAwakeState()
             self.configureResources()
         }
         model.showSettingsWindow = { [weak self] page in
@@ -175,7 +184,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// KeepAwake 상태가 바지면 아이콘 점과 모델(→패널 표시)을 함께 갱신한다.
     private func refreshKeepAwakeState() {
         animator?.setAwake(keepAwake.isActive)
-        model.syncAwake(from: keepAwake)
+        lidAwake.configure(enabled: keepAwake.isActive && model.resources.lidAwakeEnabled,
+                           endsAt: keepAwake.endsAt)
+        model.syncAwake(from: keepAwake, lidStatus: lidAwake.status)
     }
 
     @objc private func handleShowHistoryPanel() {

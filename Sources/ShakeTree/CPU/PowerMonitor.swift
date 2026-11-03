@@ -33,8 +33,10 @@ final class PowerMonitor {
         observers.removeAll()
     }
     private func read() {
+        let thermalState = ProcessInfo.processInfo.thermalState
         var next = PowerSnapshot(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
-                                 thermalLimited: ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical)
+                                 thermalLimited: thermalState == .serious || thermalState == .critical,
+                                 thermalCritical: thermalState == .critical)
         if let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
            let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] {
             for source in sources {

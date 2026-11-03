@@ -122,8 +122,20 @@ struct SettingsWindowView: View {
         Form {
             Section {
                 LabeledContent("현재 상태") { AwakeStatusView(state: model.awake) }
-                Picker("화면", selection: Binding(get: { model.awake.mode }, set: { model.setAwakeMode($0) })) {
+                Picker("열려 있을 때 화면", selection: Binding(get: { model.awake.mode }, set: { model.setAwakeMode($0) })) {
                     ForEach(AwakeMode.allCases) { mode in Text(mode.title).tag(mode) }
+                }
+                resourceToggle("덮개를 닫아도 Mac 유지", \.lidAwakeEnabled)
+                if case let .failed(message) = model.awake.lidStatus {
+                    Text(message).foregroundStyle(.orange)
+                } else if model.awake.active && model.resources.lidAwakeEnabled {
+                    switch model.awake.lidStatus {
+                    case .active: Text("덮개를 닫아도 계속 실행 중").foregroundStyle(.secondary)
+                    case .external: Text("다른 전원 설정이 덮개 닫힘 잠자기를 막고 있습니다").foregroundStyle(.secondary)
+                    case .preparing, .stopping: Text("덮개 닫힘 설정 확인 중…").foregroundStyle(.secondary)
+                    case .failed: EmptyView()
+                    case .off: EmptyView()
+                    }
                 }
                 HStack {
                     TextField("지속 시간", value: $minutes, format: .number).frame(maxWidth: 160)
@@ -133,12 +145,12 @@ struct SettingsWindowView: View {
                     Button("시작") { model.enableAwake(minutes: minutes) }.disabled(!validMinutes)
                     Button("끄기") { model.disableAwake() }.disabled(!model.awake.active)
                 }
-                Text("1분~24시간. 덮개 닫기·강제 잠자기는 제외됩니다.").font(.caption).foregroundStyle(.secondary)
+                Text("1분~24시간. 덮개 유지 중에는 수동 잠자기도 막습니다. 화면 보호기와 잠금은 macOS 설정을 따릅니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("세션 관리") {
                 resourceToggle("배터리 20% 이하에서 자동 종료", \.lowBatteryProtection)
                 resourceToggle("중단된 세션 복원", \.restoreInterruptedAwake)
-                Text("정상 종료 시 세션은 해제됩니다. 비정상 종료 후에는 24시간 안에 시작했고 아직 유효한 세션만 복원합니다.")
+                Text("온도가 위험 수준이면 자동 종료됩니다. 정상 종료 시 세션은 해제되며, 중단된 세션은 24시간 안에 시작했고 아직 유효할 때만 복원합니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let text = model.awake.error ?? model.awake.notice {

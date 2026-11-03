@@ -22,6 +22,7 @@ final class StorageAndAwakeTests: XCTestCase {
     func testNativeAwakeModesUseDifferentOSAssertionsAndPreserveDeadline() throws {
         let awake = KeepAwake(defaults: nil)
         defer { awake.disable() }
+        awake.setMode(.systemOnly)
         XCTAssertTrue(awake.enable(duration: 60))
         XCTAssertEqual(awake.assertionTypeForDiagnostics, "PreventUserIdleSystemSleep")
         let end = awake.endsAt
@@ -32,6 +33,16 @@ final class StorageAndAwakeTests: XCTestCase {
         awake.disable()
         XCTAssertFalse(awake.isActive)
         XCTAssertNil(awake.assertionTypeForDiagnostics)
+    }
+    func testLegacyScreenChoiceMigratesOnceAndFutureChoiceIsPreserved() throws {
+        let name = "ShakeTreeTests.awake-mode.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(AwakeMode.systemOnly.rawValue, forKey: "awakeMode")
+        let migrated = KeepAwake(defaults: defaults)
+        XCTAssertEqual(migrated.mode, .displayOn)
+        migrated.setMode(.systemOnly)
+        XCTAssertEqual(KeepAwake(defaults: defaults).mode, .systemOnly)
     }
     func testTimedSessionExpiresAndInvalidDurationKeepsCurrentSession() {
         let awake = KeepAwake(defaults: nil)

@@ -5,7 +5,7 @@ import IOKit.pwr_mgt
 enum AwakeMode: String, CaseIterable, Identifiable, Sendable {
     case systemOnly, displayOn
     var id: String { rawValue }
-    var title: String { self == .systemOnly ? "화면 끄기 허용" : "화면도 유지" }
+    var title: String { self == .systemOnly ? "화면 자동 꺼짐 허용" : "화면 켜짐 유지" }
     var assertionType: CFString {
         self == .systemOnly ? kIOPMAssertionTypePreventUserIdleSystemSleep as CFString
             : kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString
@@ -35,7 +35,16 @@ final class KeepAwake {
         self.defaults = defaults
         self.assertions = assertions
         self.now = now
-        self.mode = AwakeMode(rawValue: defaults?.string(forKey: "awakeMode") ?? "") ?? .systemOnly
+        // The original label did not distinguish idle display sleep from closing the lid.
+        // Existing installations get the intended visible-screen default once; subsequent
+        // explicit choices remain intact.
+        if defaults?.bool(forKey: "awakeDisplayBehaviorV2") == true {
+            self.mode = AwakeMode(rawValue: defaults?.string(forKey: "awakeMode") ?? "") ?? .displayOn
+        } else {
+            self.mode = .displayOn
+            defaults?.set(AwakeMode.displayOn.rawValue, forKey: "awakeMode")
+            defaults?.set(true, forKey: "awakeDisplayBehaviorV2")
+        }
     }
 
     @discardableResult
@@ -47,6 +56,11 @@ final class KeepAwake {
         }
         guard !settings.lowBatteryProtection || !power.batteryIsLow else {
             lastError = "배터리 20% 이하에서는 잠자기 방지를 시작하지 않습니다"
+            onChange?()
+            return false
+        }
+        guard !power.thermalCritical else {
+            lastError = "기기 온도가 너무 높아 잠자기 방지를 시작하지 않습니다"
             onChange?()
             return false
         }
@@ -103,6 +117,8 @@ final class KeepAwake {
         self.settings = settings
         if isActive && settings.lowBatteryProtection && power.batteryIsLow {
             disable(notice: "배터리 20% 이하로 잠자기 방지를 종료했습니다")
+        } else if isActive && power.thermalCritical {
+            disable(notice: "기기 온도가 너무 높아 잠자기 방지를 종료했습니다")
         }
     }
 

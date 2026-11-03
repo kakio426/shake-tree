@@ -88,6 +88,7 @@ final class ResourceEfficiencyTests: XCTestCase {
     func testFailedAssertionReplacementPreservesExistingSession() {
         let fake = FakeAssertions()
         let awake = KeepAwake(defaults: nil, assertions: fake.client)
+        awake.setMode(.systemOnly)
         XCTAssertTrue(awake.enable(duration: 120))
         let deadline = awake.endsAt
         fake.fail = true
@@ -167,6 +168,47 @@ final class ResourceEfficiencyTests: XCTestCase {
         XCTAssertNil(host)
     }
 
+    func testActiveAwakeStatusFitsTheCompactPanel() throws {
+        _ = NSApplication.shared
+        let fake = FakeAssertions()
+        let awake = KeepAwake(defaults: nil, assertions: fake.client)
+        defer { awake.disable() }
+        XCTAssertTrue(awake.enable())
+        let model = AppModel(keepAwake: awake, defaults: nil)
+        model.syncAwake(from: awake, lidStatus: .active)
+        let controller = MainPanelController(model: model)
+        controller.show()
+        defer { controller.close() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let host = try XCTUnwrap(controller.hostedViewForDiagnostics)
+        XCTAssertLessThanOrEqual(host.frame.height, 400)
+        if let directory = ProcessInfo.processInfo.environment["SHAKETREE_QA_OUTPUT"] {
+            let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("awake-active-overview.png"))
+        }
+    }
+
+    func testAwakeSettingsShowsRecoveryFailureWhenSessionIsOff() throws {
+        _ = NSApplication.shared
+        let awake = KeepAwake(defaults: nil)
+        let model = AppModel(keepAwake: awake, defaults: nil)
+        model.syncAwake(from: awake, lidStatus: .failed("전원 설정 복구 실패"))
+        let controller = UtilityWindowController()
+        controller.show(title: "Shake Tree settings test", size: NSSize(width: 480, height: 420),
+                        content: AnyView(SettingsWindowView(model: model, page: .awake)))
+        defer { controller.close() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let host = try XCTUnwrap(controller.hostedViewForDiagnostics)
+        if let directory = ProcessInfo.processInfo.environment["SHAKETREE_QA_OUTPUT"] {
+            let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("awake-settings-failure.png"))
+        }
+    }
+
     func testLowBatteryReleasesAssertionAndBlocksRestartUntilAllowed() {
         let fake = FakeAssertions()
         let awake = KeepAwake(defaults: nil, assertions: fake.client)
@@ -178,6 +220,19 @@ final class ResourceEfficiencyTests: XCTestCase {
         XCTAssertNotNil(awake.lastNotice)
         XCTAssertFalse(awake.enable())
         awake.configure(power: .init(onBattery: false, batteryPercent: 15), settings: .init())
+        XCTAssertTrue(awake.enable())
+        awake.disable()
+    }
+
+    func testCriticalTemperatureReleasesAwakeSession() {
+        let fake = FakeAssertions()
+        let awake = KeepAwake(defaults: nil, assertions: fake.client)
+        XCTAssertTrue(awake.enable())
+        awake.configure(power: .init(thermalLimited: true, thermalCritical: true), settings: .init())
+        XCTAssertFalse(awake.isActive)
+        XCTAssertTrue(fake.active.isEmpty)
+        XCTAssertFalse(awake.enable())
+        awake.configure(power: .init(), settings: .init())
         XCTAssertTrue(awake.enable())
         awake.disable()
     }

@@ -22,7 +22,9 @@ final class AppModel: ObservableObject {
     struct AwakeState: Equatable {
         var active = false
         var endsAt: Date?
-        var mode: AwakeMode = .systemOnly
+        var mode: AwakeMode = .displayOn
+        var lidEnabled = false
+        var lidStatus: LidAwakeStatus = .off
         var sessionDuration: TimeInterval?
         var error: String?
         var notice: String?
@@ -86,9 +88,10 @@ final class AppModel: ObservableObject {
         usage = UsageState(usages: usages, statusText: statusText, isRefreshing: isRefreshing, progress: progress)
     }
 
-    func syncAwake(from service: KeepAwake) {
+    func syncAwake(from service: KeepAwake, lidStatus: LidAwakeStatus = .off) {
         let next = AwakeState(active: service.isActive, endsAt: service.endsAt,
-                              mode: service.mode, sessionDuration: service.sessionDuration,
+                              mode: service.mode, lidEnabled: resources.lidAwakeEnabled, lidStatus: lidStatus,
+                              sessionDuration: service.sessionDuration,
                               error: service.lastError, notice: service.lastNotice)
         if next != awake { awake = next }
     }

@@ -220,17 +220,33 @@ struct CompactUsageView: View {
 
 struct AwakeStatusView: View {
     let state: AppModel.AwakeState
+    private var detail: String {
+        guard state.lidEnabled else { return state.mode.title }
+        switch state.lidStatus {
+        case .active, .external: return "덮개 유지"
+        case .preparing, .stopping: return "덮개 확인 중"
+        case .failed: return "덮개 유지 실패"
+        case .off: return state.mode.title
+        }
+    }
     var body: some View {
         Group {
             if state.active, let end = state.endsAt {
                 TimelineView(.periodic(from: .now, by: 30)) { context in
                     let minutes = max(0, Int(ceil(end.timeIntervalSince(context.date) / 60)))
-                    Text("\(minutes)분 · \(state.mode.title)").help("\(Theme.clockText(end))까지")
+                    Text("\(minutes)분 · \(detail)").help("\(Theme.clockText(end))까지 · \(state.mode.title)")
                 }
             } else {
-                Text(state.active ? "무기한 · \(state.mode.title)" : "꺼짐")
+                Text(state.active ? "무기한 · \(detail)" : inactiveText).help(state.mode.title)
             }
         }
-        .font(Theme.caption).foregroundStyle(state.active ? Color.accentColor : Color.secondary)
+        .font(Theme.caption).foregroundStyle({
+            if case .failed = state.lidStatus { return Color.orange }
+            return state.active ? Color.accentColor : Color.secondary
+        }())
+    }
+    private var inactiveText: String {
+        if case .failed = state.lidStatus { return "해제 확인 필요" }
+        return "꺼짐"
     }
 }
